@@ -58,7 +58,7 @@ private:
   bool readCameraFrame(cv::Mat & frame, const char * task_name);
   void runBoxGrid();
 
-  int camera_index_{0};
+  std::string camera_index_{0};
   std::string camera_device_;
   cv::VideoCapture camera_;
   std::unique_ptr<BoxGridDetector> box_grid_detector_;

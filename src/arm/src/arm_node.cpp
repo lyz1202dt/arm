@@ -19,7 +19,7 @@
 namespace
 {
 constexpr int kQueueSize = 50000;
-constexpr int kDefaultCameraIndex = 0;
+ const char* kDefaultCameraIndex = "/dev/v4l/by-id/usb-HD_Camera_Manufacturer_USB_2.0_Camera-video-index0";
 constexpr int kCameraReadMaxRetries = 10;
 constexpr char kStartRecognitionParameter[] = "start_recognition";
 constexpr std::chrono::milliseconds kCameraReadRetryDelay{100};
@@ -59,11 +59,11 @@ bool CommandSemaphore::wait() noexcept
 ArmNode::ArmNode()
 : Node("arm_node")
 {
-  camera_index_ = declare_parameter<int>("camera_index", kDefaultCameraIndex);
+  camera_index_ = declare_parameter<std::string>("camera_index", kDefaultCameraIndex);
   camera_device_ = declare_parameter<std::string>("camera_device", "");
   // 这里的模型路径只是当前环境下的默认值，部署到其他机器时应优先通过参数覆写。
   const std::string name_model_path = declare_parameter<std::string>(
-    "name_model_path", "/home/pc2/Desktop/arm2/src/arm/best.onnx");
+    "name_model_path", "/home/pc2/Desktop/arm/src/arm/best.onnx");
   const bool name_cuda = declare_parameter<bool>("name_run_with_cuda", false);
   declare_parameter<bool>(kStartRecognitionParameter, false);
 
@@ -199,7 +199,7 @@ std::string ArmNode::cameraSourceLabel() const
   if (!camera_device_.empty()) {
     return camera_device_;
   }
-  return std::to_string(camera_index_);
+  return camera_index_;
 }
 
 bool ArmNode::openCamera()
