@@ -1,5 +1,6 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<!-- 机械臂视觉功能集成包的 ROS2 清单文件，声明构建方式以及节点运行所需依赖。 -->
 <package format="3">
   <name>arm</name>
   <version>0.0.0</version>
@@ -11,7 +12,7 @@
 
   <depend>rclcpp</depend>
   <depend>std_msgs</depend>
-  <depend>robot_interfaces</depend>
+  <depend>robot_msgs</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

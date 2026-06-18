@@ -1,6 +1,8 @@
 #ifndef ARM_DETECTION_HPP_
 #define ARM_DETECTION_HPP_
 
+// 定义视觉模块共享的基础检测结果结构，统一描述类别、置信度和检测框信息。
+
 #include <string>
 
 #include <opencv2/core.hpp>

@@ -1,3 +1,4 @@
+// 实现 ONNX 目标检测模型的加载、预处理、推理与后处理，作为各视觉模块共享的基础能力。
 #include <arm/inference.hpp>
 
 #include <algorithm>
@@ -103,7 +104,7 @@ std::vector<Detection> Inference::run(const cv::Mat & frame)
     double max_class_score = 0.0;
     cv::minMaxLoc(scores, nullptr, &max_class_score, nullptr, &class_id_point);
 
-    // 只保留类别分数足够高的候选框，减少后续 NMS 的噪声输入。
+    // 每一行前 4 个值是框信息，后面才是各类别分数；这里取最大类别分数作为该候选的类别置信度。
     if (max_class_score > model_score_threshold_) {
       const float x = data[0];
       const float y = data[1];
@@ -185,10 +186,10 @@ void Inference::loadOnnxNetwork()
   }
 
   // 根据参数选择 CUDA 或 CPU 推理后端，便于在不同机器环境下切换。
-  if (cuda_enabled_) {
+  /*if (cuda_enabled_) {
     net_.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
     net_.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);
-  } else {
+  } else*/ {
     net_.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
     net_.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
   }

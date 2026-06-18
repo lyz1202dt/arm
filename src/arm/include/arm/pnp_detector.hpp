@@ -1,6 +1,8 @@
 #ifndef ARM_PNP_DETECTOR_HPP_
 #define ARM_PNP_DETECTOR_HPP_
 
+// 声明基于检测框与几何约束的 PnP 位姿识别接口及其结果结构。
+
 #include <memory>
 #include <optional>
 #include <vector>

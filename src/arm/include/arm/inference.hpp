@@ -1,6 +1,8 @@
 #ifndef ARM_INFERENCE_HPP_
 #define ARM_INFERENCE_HPP_
 
+// 声明 ONNX 目标检测推理封装，对外提供模型加载、单帧推理和类别信息访问接口。
+
 #include <string>
 #include <vector>
 

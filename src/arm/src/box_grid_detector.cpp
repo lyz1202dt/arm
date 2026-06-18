@@ -1,7 +1,11 @@
+// 实现基于目标检测结果的箱子编号排序与多帧稳定判定逻辑。
 #include <arm/box_grid_detector.hpp>
 
 #include <algorithm>
 #include <cmath>
+#include <iostream>
+#include <opencv2/highgui.hpp>
+#include <sstream>
 #include <stdexcept>
 
 namespace arm
@@ -21,6 +25,24 @@ float centerY(const Detection & detection)
   return static_cast<float>(detection.box.y) + static_cast<float>(detection.box.height) * 0.5F;
 }
 
+std::string joinIds(const std::vector<int32_t> & ids)
+{
+  std::ostringstream stream;
+  for (const int32_t id : ids) {
+    stream << id;
+  }
+  return stream.str();
+}
+
+std::string joinIds(const std::array<int32_t, 8> & ids)
+{
+  std::ostringstream stream;
+  for (const int32_t id : ids) {
+    stream << id;
+  }
+  return stream.str();
+}
+
 }  // namespace
 
 BoxGridDetector::BoxGridDetector(std::shared_ptr<Inference> inference)
@@ -36,21 +58,35 @@ std::optional<std::array<int32_t, 8>> BoxGridDetector::detectStableGrid(cv::Vide
   std::optional<std::array<int32_t, 8>> last_grid;
   int same_count = 0;
 
-  // 连续采样多帧，只有多次识别结果一致才认为矩阵稳定，降低抖动与误检影响。
+  // 连续采样多帧，只有多次得到完全相同的 8 个编号结果才认为稳定，允许当前帧分排不一定是 2x4。
   for (int attempt = 0; attempt < max_attempts_; ++attempt) {
     cv::Mat frame;
     if (!camera.read(frame) || frame.empty()) {
       continue;
     }
 
-    const auto grid = detectGridOnce(frame);
-    if (!grid) {
+    cv::imshow("...",frame);
+    cv::waitKey(1);
+
+    const auto current_ids = collectOrderedIds(frame);
+    if (current_ids.empty()) {
       last_grid.reset();
       same_count = 0;
       continue;
     }
 
-    if (last_grid && *last_grid == *grid) {
+    std::cout << "本次识别结果: " << joinIds(current_ids) << std::endl;
+
+    if (current_ids.size() != 8) {
+      last_grid.reset();
+      same_count = 0;
+      continue;
+    }
+
+    std::array<int32_t, 8> grid{};
+    std::copy(current_ids.begin(), current_ids.end(), grid.begin());
+
+    if (last_grid && *last_grid == grid) {
       ++same_count;
     } else {
       last_grid = grid;
@@ -58,6 +94,7 @@ std::optional<std::array<int32_t, 8>> BoxGridDetector::detectStableGrid(cv::Vide
     }
 
     if (same_count >= stable_count_) {
+      std::cout << "稳定识别结果: " << joinIds(grid) << std::endl;
       return grid;
     }
   }
@@ -65,27 +102,35 @@ std::optional<std::array<int32_t, 8>> BoxGridDetector::detectStableGrid(cv::Vide
   return std::nullopt;
 }
 
-std::optional<std::array<int32_t, 8>> BoxGridDetector::detectGridOnce(const cv::Mat & frame) const
+std::vector<int32_t> BoxGridDetector::collectOrderedIds(const cv::Mat & frame) const
 {
   if (frame.empty()) {
-    return std::nullopt;
+    return {};
   }
 
   const auto rows = groupDetectionsByRows(inference_->run(frame));
-  // 只接受完整的 2x4 识别结果；不足 8 个或分排异常时直接丢弃。
-  if (rows.size() != 2 || rows[0].size() != 4 || rows[1].size() != 4) {
+  std::vector<int32_t> ids;
+  ids.reserve(8);
+
+  for (const auto & row : rows) {
+    for (const auto & detection : row) {
+      // 直接使用模型类别索引作为箱子编号，顺序保持左上到右下。
+      ids.push_back(detection.class_id);
+    }
+  }
+
+  return ids;
+}
+
+std::optional<std::array<int32_t, 8>> BoxGridDetector::detectGridOnce(const cv::Mat & frame) const
+{
+  const auto ids = collectOrderedIds(frame);
+  if (ids.size() != 8) {
     return std::nullopt;
   }
 
   std::array<int32_t, 8> grid{};
-  int index = 0;
-  for (const auto & row : rows) {
-    for (const auto & detection : row) {
-      // 直接使用模型类别索引作为箱子编号，顺序保持左上到右下。
-      grid[index++] = detection.class_id;
-    }
-  }
-
+  std::copy(ids.begin(), ids.end(), grid.begin());
   return grid;
 }
 
@@ -131,6 +176,7 @@ std::vector<std::vector<Detection>> BoxGridDetector::groupDetectionsByRows(
     }
 
     if (!assigned) {
+      // 当前检测框与已有行都不匹配时，认为它是新的一排。
       rows.push_back({detection});
     }
   }

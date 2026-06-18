@@ -1,6 +1,8 @@
 #ifndef ARM_GRIP_DETECTOR_HPP_
 #define ARM_GRIP_DETECTOR_HPP_
 
+// 声明抓取结果判断接口，使用整帧亮度阈值快速估计是否抓到目标。
+
 #include <opencv2/opencv.hpp>
 
 namespace arm

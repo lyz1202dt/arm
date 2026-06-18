@@ -1,4 +1,6 @@
+// 实现基于整帧平均亮度阈值的轻量抓取结果判断逻辑。
 #include <arm/grip_detector.hpp>
+#include <opencv2/highgui.hpp>
 
 namespace arm
 {
@@ -13,6 +15,9 @@ float GripDetector::detectOnce(const cv::Mat & frame) const
   if (frame.empty()) {
     return -1.0F;
   }
+
+  cv::imshow("...",frame);
+  cv::waitKey(1);
 
   cv::Mat gray;
   cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);

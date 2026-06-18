@@ -1,11 +1,37 @@
+// 实现检测框约束下的矩形筛选与 solvePnP 位姿估计流程。
 #include <arm/pnp_detector.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <opencv2/highgui.hpp>
 #include <stdexcept>
 
 namespace arm
 {
+namespace
+{
+constexpr bool kEnableGammaCorrection = true;
+constexpr double kGamma = 0.7;
+
+cv::Mat applyGammaCorrection(const cv::Mat & frame)
+{
+  if (!kEnableGammaCorrection) {
+    return frame;
+  }
+
+  std::array<unsigned char, 256> lut_data{};
+  for (int i = 0; i < 256; ++i) {
+    const double normalized = static_cast<double>(i) / 255.0;
+    lut_data[i] = cv::saturate_cast<unsigned char>(std::pow(normalized, kGamma) * 255.0);
+  }
+
+  const cv::Mat lut(1, static_cast<int>(lut_data.size()), CV_8UC1, lut_data.data());
+  cv::Mat corrected;
+  cv::LUT(frame, lut, corrected);
+  return corrected;
+}
+}  // namespace
 
 PnpDetector::PnpDetector(std::shared_ptr<Inference> inference)
 : inference_(std::move(inference)), clahe_(cv::createCLAHE(2.0))
@@ -22,8 +48,12 @@ std::optional<PnpResult> PnpDetector::detectOnce(const cv::Mat & frame)
     return std::nullopt;
   }
 
+  const cv::Mat gamma_frame = applyGammaCorrection(frame);
+  cv::imshow("...", gamma_frame);
+  cv::waitKey(1);
+
   cv::Mat gray;
-  cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
+  cv::cvtColor(gamma_frame, gray, cv::COLOR_BGR2GRAY);
   cv::GaussianBlur(gray, gray, cv::Size(5, 5), 10, 20);
   // 使用 CLAHE 提升局部对比度，增强边缘可见性，便于后续矩形轮廓提取。
   clahe_->apply(gray, gray);
@@ -31,8 +61,8 @@ std::optional<PnpResult> PnpDetector::detectOnce(const cv::Mat & frame)
   cv::Mat edges;
   cv::Canny(gray, edges, 50, 150);
 
-  const auto detections = inference_->run(frame);
-  cv::Mat mask = cv::Mat::zeros(cv::Size(frame.cols, frame.rows), CV_8UC1);
+  const auto detections = inference_->run(gamma_frame);
+  cv::Mat mask = cv::Mat::zeros(cv::Size(gamma_frame.cols, gamma_frame.rows), CV_8UC1);
   for (const auto & detection : detections) {
     cv::Rect box = detection.box;
     // 在检测框基础上适度外扩，避免边缘刚好落在框外导致目标轮廓被截断。
@@ -40,7 +70,7 @@ std::optional<PnpResult> PnpDetector::detectOnce(const cv::Mat & frame)
     box.y -= static_cast<int>(box.height * 0.1);
     box.height = static_cast<int>(box.height * 1.2);
     box.width = static_cast<int>(box.width * 1.2);
-    box &= cv::Rect(0, 0, frame.cols, frame.rows);
+    box &= cv::Rect(0, 0, gamma_frame.cols, gamma_frame.rows);
     if (box.width > 0 && box.height > 0) {
       cv::rectangle(mask, box, cv::Scalar(255), -1);
     }

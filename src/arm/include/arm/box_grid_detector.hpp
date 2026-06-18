@@ -1,6 +1,8 @@
 #ifndef ARM_BOX_GRID_DETECTOR_HPP_
 #define ARM_BOX_GRID_DETECTOR_HPP_
 
+// 声明箱子编号排序与多帧稳定判定接口。
+
 #include <array>
 #include <memory>
 #include <optional>
@@ -13,17 +15,19 @@
 namespace arm
 {
 
-// 基于目标检测结果识别 2x4 箱子矩阵，并输出从左上到右下的一维编号数组。
+// 基于目标检测结果提取排序后的箱子编号序列，并输出稳定的 8 位结果。
 class BoxGridDetector
 {
 public:
   explicit BoxGridDetector(std::shared_ptr<Inference> inference);
 
-  // 连续采样摄像头画面，只有当多次结果一致时才返回稳定矩阵。
+  // 连续采样摄像头画面，只有当连续多帧都得到相同的 8 个编号结果时才返回。
   std::optional<std::array<int32_t, 8>> detectStableGrid(cv::VideoCapture & camera);
 
 private:
-  // 对单帧图像执行一次矩阵识别；若不是完整的 2x4 结果则返回空。
+  // 对单帧图像执行一次排序，提取当前帧从左上到右下的编号序列。
+  std::vector<int32_t> collectOrderedIds(const cv::Mat & frame) const;
+  // 对单帧图像执行一次识别；只有当前帧恰好得到 8 个编号时才返回固定长度结果。
   std::optional<std::array<int32_t, 8>> detectGridOnce(const cv::Mat & frame) const;
   // 按检测框中心点的垂直位置分成两排，并在每排内部按水平位置排序。
   std::vector<std::vector<Detection>> groupDetectionsByRows(
