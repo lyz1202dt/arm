@@ -2,16 +2,25 @@
 #include <arm/box_grid_detector.hpp>
 
 #include <algorithm>
+#include <cstddef>
+#include <chrono>
 #include <cmath>
 #include <iostream>
 #include <opencv2/highgui.hpp>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 
 namespace arm
 {
 namespace
 {
+constexpr std::size_t kGridSize = 8;
+constexpr std::size_t kVoteBufferSize = 7;
+constexpr std::chrono::milliseconds kFrameReadRetryDelay{50};
+
+using GridResult = std::array<int32_t, kGridSize>;
+using GridBuffer = std::array<std::optional<GridResult>, kVoteBufferSize>;
 
 // 计算检测框中心点的 X 坐标，用于左右排序。
 float centerX(const Detection & detection)
@@ -43,6 +52,45 @@ std::string joinIds(const std::array<int32_t, 8> & ids)
   return stream.str();
 }
 
+bool allSlotsValid(const GridBuffer & buffer)
+{
+  return std::all_of(buffer.begin(), buffer.end(), [](const auto & result) {
+    return result.has_value();
+  });
+}
+
+GridResult selectMajorityGrid(const GridBuffer & buffer, const std::size_t latest_slot)
+{
+  GridResult result{};
+
+  for (std::size_t grid_index = 0; grid_index < result.size(); ++grid_index) {
+    int32_t best_value = (*buffer[latest_slot])[grid_index];
+    int best_count = 0;
+
+    for (std::size_t age = 0; age < buffer.size(); ++age) {
+      const std::size_t candidate_slot =
+        (latest_slot + buffer.size() - age) % buffer.size();
+      const int32_t candidate_value = (*buffer[candidate_slot])[grid_index];
+      int candidate_count = 0;
+
+      for (const auto & frame_result : buffer) {
+        if ((*frame_result)[grid_index] == candidate_value) {
+          ++candidate_count;
+        }
+      }
+
+      if (candidate_count > best_count) {
+        best_value = candidate_value;
+        best_count = candidate_count;
+      }
+    }
+
+    result[grid_index] = best_value;
+  }
+
+  return result;
+}
+
 }  // namespace
 
 BoxGridDetector::BoxGridDetector(std::shared_ptr<Inference> inference)
@@ -53,49 +101,44 @@ BoxGridDetector::BoxGridDetector(std::shared_ptr<Inference> inference)
   }
 }
 
-std::optional<std::array<int32_t, 8>> BoxGridDetector::detectStableGrid(cv::VideoCapture & camera)
+std::optional<std::array<int32_t, 8>> BoxGridDetector::detectStableGrid(
+  cv::VideoCapture & camera, const std::atomic_bool & keep_running)
 {
-  std::optional<std::array<int32_t, 8>> last_grid;
-  int same_count = 0;
+  GridBuffer recent_grids{};
+  std::size_t next_slot = 0;
 
-  // 连续采样多帧，只有多次得到完全相同的 8 个编号结果才认为稳定，允许当前帧分排不一定是 2x4。
-  for (int attempt = 0; attempt < max_attempts_; ++attempt) {
+  // 持续采样最新图像，最近 7 帧都得到 8 个编号后，对每个位置做多数投票。
+  while (keep_running.load()) {
     cv::Mat frame;
     if (!camera.read(frame) || frame.empty()) {
+      std::this_thread::sleep_for(kFrameReadRetryDelay);
       continue;
     }
 
-    cv::imshow("...",frame);
+    cv::imshow("...", frame);
     cv::waitKey(1);
 
     const auto current_ids = collectOrderedIds(frame);
+    const std::size_t current_slot = next_slot;
+    recent_grids[current_slot].reset();
+    next_slot = (next_slot + 1) % recent_grids.size();
+
     if (current_ids.empty()) {
-      last_grid.reset();
-      same_count = 0;
       continue;
     }
 
     std::cout << "本次识别结果: " << joinIds(current_ids) << std::endl;
 
-    if (current_ids.size() != 8) {
-      last_grid.reset();
-      same_count = 0;
-      continue;
+    if (current_ids.size() == kGridSize) {
+      GridResult grid{};
+      std::copy(current_ids.begin(), current_ids.end(), grid.begin());
+      recent_grids[current_slot] = grid;
     }
 
-    std::array<int32_t, 8> grid{};
-    std::copy(current_ids.begin(), current_ids.end(), grid.begin());
-
-    if (last_grid && *last_grid == grid) {
-      ++same_count;
-    } else {
-      last_grid = grid;
-      same_count = 1;
-    }
-
-    if (same_count >= stable_count_) {
-      std::cout << "稳定识别结果: " << joinIds(grid) << std::endl;
-      return grid;
+    if (allSlotsValid(recent_grids)) {
+      const auto majority_grid = selectMajorityGrid(recent_grids, current_slot);
+      std::cout << "多数投票识别结果: " << joinIds(majority_grid) << std::endl;
+      return majority_grid;
     }
   }
 

@@ -3,6 +3,7 @@
 
 // 声明箱子编号排序与多帧稳定判定接口。
 
+#include <atomic>
 #include <array>
 #include <memory>
 #include <optional>
@@ -21,8 +22,9 @@ class BoxGridDetector
 public:
   explicit BoxGridDetector(std::shared_ptr<Inference> inference);
 
-  // 连续采样摄像头画面，只有当连续多帧都得到相同的 8 个编号结果时才返回。
-  std::optional<std::array<int32_t, 8>> detectStableGrid(cv::VideoCapture & camera);
+  // 持续采样摄像头画面，使用最近 7 帧有效识别结果逐位置多数投票后返回。
+  std::optional<std::array<int32_t, 8>> detectStableGrid(
+    cv::VideoCapture & camera, const std::atomic_bool & keep_running);
 
 private:
   // 对单帧图像执行一次排序，提取当前帧从左上到右下的编号序列。
@@ -35,10 +37,6 @@ private:
 
   // 共享的目标检测推理器。
   std::shared_ptr<Inference> inference_;
-  // 判定结果稳定所需的连续一致次数。
-  int stable_count_{3};
-  // 为获得稳定结果允许尝试的最大帧数。
-  int max_attempts_{100};
 };
 
 }  // namespace arm
