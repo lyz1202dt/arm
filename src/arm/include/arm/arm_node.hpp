@@ -15,7 +15,7 @@
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <semaphore.h>
-#include <std_msgs/msg/float64_multi_array.hpp>
+#include <std_msgs/msg/int32_multi_array.hpp>
 #include <std_msgs/msg/int32.hpp>
 
 namespace arm
@@ -63,7 +63,7 @@ private:
   cv::VideoCapture camera_;
   std::unique_ptr<BoxGridDetector> box_grid_detector_;
 
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr box_grid_pub_;
+  rclcpp::Publisher<std_msgs::msg::Int32MultiArray>::SharedPtr box_grid_pub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr command_sub_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameter_callback_handle_;
   

@@ -63,7 +63,7 @@ ArmNode::ArmNode()
   camera_device_ = declare_parameter<std::string>("camera_device", "");
   // 这里的模型路径只是当前环境下的默认值，部署到其他机器时应优先通过参数覆写。
   const std::string name_model_path = declare_parameter<std::string>(
-    "name_model_path", "/home/lyz/桌面/arm/src/arm/best.onnx");
+    "name_model_path", "/home/pc2/Desktop/arm2/src/arm/best.onnx");
   const bool name_cuda = declare_parameter<bool>("name_run_with_cuda", false);
   declare_parameter<bool>(kStartRecognitionParameter, false);
 
@@ -76,7 +76,7 @@ ArmNode::ArmNode()
 
   box_grid_detector_ = std::make_unique<BoxGridDetector>(name_inference);
 
-  box_grid_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>("box_id_grid", kQueueSize);
+  box_grid_pub_ = create_publisher<std_msgs::msg::Int32MultiArray>("box_id_grid", kQueueSize);
   command_sub_ = create_subscription<std_msgs::msg::Int32>(
     "arm_command", kQueueSize, [this](const std_msgs::msg::Int32::SharedPtr msg) {
       onCommand(msg);
@@ -276,7 +276,7 @@ void ArmNode::runBoxGrid()
     return;
   }
 
-  std_msgs::msg::Float64MultiArray message;
+  std_msgs::msg::Int32MultiArray message;
   message.data.resize(grid->size());
   for (std::size_t i = 0; i < grid->size(); ++i) {
     message.data[i] = static_cast<double>((*grid)[i]);
