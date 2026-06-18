@@ -7,10 +7,12 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <arm/box_grid_detector.hpp>
 #include <opencv2/core/mat.hpp>
 #include <opencv2/videoio.hpp>
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <semaphore.h>
 #include <std_msgs/msg/float64_multi_array.hpp>
@@ -44,6 +46,9 @@ public:
 
 private:
   void onCommand(const std_msgs::msg::Int32::SharedPtr msg);
+  rcl_interfaces::msg::SetParametersResult onParametersChanged(
+    const std::vector<rclcpp::Parameter> & parameters);
+  bool requestRecognition(const char * source);
   void visionWorker();
   void handleCommand();
 
@@ -60,6 +65,7 @@ private:
 
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr box_grid_pub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr command_sub_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameter_callback_handle_;
   
   CommandSemaphore command_signal_;
   std::atomic_bool worker_running_{true};

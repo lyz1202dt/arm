@@ -9,6 +9,7 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <vector>
 
 #include <arm/inference.hpp>
 #include <opencv2/core.hpp>
@@ -20,6 +21,7 @@ namespace
 constexpr int kQueueSize = 50000;
 constexpr int kDefaultCameraIndex = 0;
 constexpr int kCameraReadMaxRetries = 10;
+constexpr char kStartRecognitionParameter[] = "start_recognition";
 constexpr std::chrono::milliseconds kCameraReadRetryDelay{100};
 }  // namespace
 
@@ -61,8 +63,9 @@ ArmNode::ArmNode()
   camera_device_ = declare_parameter<std::string>("camera_device", "");
   // 这里的模型路径只是当前环境下的默认值，部署到其他机器时应优先通过参数覆写。
   const std::string name_model_path = declare_parameter<std::string>(
-    "name_model_path", "/home/pc2/Desktop/arm/src/arm/best.onnx");
+    "name_model_path", "/home/lyz/桌面/arm/src/arm/best.onnx");
   const bool name_cuda = declare_parameter<bool>("name_run_with_cuda", false);
+  declare_parameter<bool>(kStartRecognitionParameter, false);
 
   openCamera();
   if (!camera_.isOpened()) {
@@ -78,9 +81,14 @@ ArmNode::ArmNode()
     "arm_command", kQueueSize, [this](const std_msgs::msg::Int32::SharedPtr msg) {
       onCommand(msg);
     });
+  parameter_callback_handle_ = add_on_set_parameters_callback(
+    [this](const std::vector<rclcpp::Parameter> & parameters) {
+      return onParametersChanged(parameters);
+    });
   vision_worker_ = std::thread(&ArmNode::visionWorker, this);
 
-  RCLCPP_INFO(get_logger(), "arm_node 已启动，等待 arm_command 控制命令");
+  RCLCPP_INFO(
+    get_logger(), "arm_node 已启动，等待 arm_command 控制命令或 start_recognition 参数触发");
 }
 
 ArmNode::~ArmNode()
@@ -107,15 +115,49 @@ void ArmNode::onCommand(const std_msgs::msg::Int32::SharedPtr msg)
       return;
   }
 
+  requestRecognition("arm_command");
+}
+
+rcl_interfaces::msg::SetParametersResult ArmNode::onParametersChanged(
+  const std::vector<rclcpp::Parameter> & parameters)
+{
+  rcl_interfaces::msg::SetParametersResult result;
+  result.successful = true;
+
+  for (const auto & parameter : parameters) {
+    if (parameter.get_name() != kStartRecognitionParameter) {
+      continue;
+    }
+
+    if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_BOOL) {
+      result.successful = false;
+      result.reason = "start_recognition 必须是 bool 类型";
+      return result;
+    }
+
+    if (parameter.as_bool()) {
+      requestRecognition("start_recognition 参数");
+    }
+  }
+
+  return result;
+}
+
+bool ArmNode::requestRecognition(const char * source)
+{
   if (vision_task_busy_.exchange(true)) {
-    RCLCPP_WARN(get_logger(), "当前识别任务仍在执行，丢弃命令: %d", msg->data);
-    return;
+    RCLCPP_WARN(get_logger(), "当前识别任务仍在执行，丢弃触发来源: %s", source);
+    return false;
   }
 
   if (!command_signal_.post()) {
     vision_task_busy_.store(false);
-    RCLCPP_ERROR(get_logger(), "识别任务信号量通知失败，丢弃命令: %d", msg->data);
+    RCLCPP_ERROR(get_logger(), "识别任务信号量通知失败，丢弃触发来源: %s", source);
+    return false;
   }
+
+  RCLCPP_INFO(get_logger(), "已触发识别任务，来源: %s", source);
+  return true;
 }
 
 void ArmNode::visionWorker()
@@ -132,6 +174,12 @@ void ArmNode::visionWorker()
 
     handleCommand();
     vision_task_busy_.store(false);
+    try {
+      set_parameter(rclcpp::Parameter(kStartRecognitionParameter, false));
+    } catch (const std::exception & exception) {
+      RCLCPP_WARN(
+        get_logger(), "重置 start_recognition 参数失败: %s", exception.what());
+    }
   }
 }
 
