@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -49,6 +50,7 @@ private:
   rcl_interfaces::msg::SetParametersResult onParametersChanged(
     const std::vector<rclcpp::Parameter> & parameters);
   bool requestRecognition(const char * source);
+  bool cancelRecognition(const char * source);
   void visionWorker();
   void handleCommand();
 
@@ -57,6 +59,7 @@ private:
   void releaseCamera();
   bool readCameraFrame(cv::Mat & frame, const char * task_name);
   void runBoxGrid();
+  bool publishGridIfRecognitionActive(const std::array<int32_t, 8> & grid);
 
   std::string camera_index_{0};
   std::string camera_device_;
@@ -69,7 +72,9 @@ private:
   
   CommandSemaphore command_signal_;
   std::atomic_bool worker_running_{true};
+  std::atomic_bool recognition_keep_running_{false};
   std::atomic_bool vision_task_busy_{false};
+  std::mutex recognition_state_mutex_;
   std::thread vision_worker_;
 };
 
