@@ -13,7 +13,6 @@
 
 #include <arm/inference.hpp>
 #include <opencv2/core.hpp>
-#include <opencv2/highgui.hpp>
 #include <rclcpp/rclcpp.hpp>
 
 namespace
@@ -102,6 +101,7 @@ ArmNode::~ArmNode()
   if (vision_worker_.joinable()) {
     vision_worker_.join();
   }
+  cleanupRecognitionResources();
 }
 
 void ArmNode::onCommand(const std_msgs::msg::Int32::SharedPtr msg)
@@ -190,6 +190,7 @@ bool ArmNode::cancelRecognition(const char * source)
 {
   std::lock_guard<std::mutex> lock(recognition_state_mutex_);
   recognition_keep_running_.store(false);
+  destroyRecognitionUi();
 
   if (!vision_task_busy_.load()) {
     releaseCamera();
@@ -236,8 +237,7 @@ void ArmNode::handleCommand()
     runBoxGrid();
   } catch (const std::exception & exception) {
     RCLCPP_ERROR(get_logger(), "执行视觉识别任务失败: %s", exception.what());
-    cv::destroyAllWindows();
-    releaseCamera();
+    cleanupRecognitionResources();
   }
 }
 
@@ -285,6 +285,17 @@ void ArmNode::releaseCamera()
   }
 }
 
+void ArmNode::destroyRecognitionUi()
+{
+  BoxGridDetector::destroyPreviewWindows();
+}
+
+void ArmNode::cleanupRecognitionResources()
+{
+  destroyRecognitionUi();
+  releaseCamera();
+}
+
 bool ArmNode::readCameraFrame(cv::Mat & frame, const char * task_name)
 {
   for (int attempt = 1; attempt <= kCameraReadMaxRetries; ++attempt) {
@@ -316,30 +327,26 @@ void ArmNode::runBoxGrid()
   RCLCPP_INFO(get_logger(), "开始识别箱子矩阵");
   cv::Mat frame;
   if (!readCameraFrame(frame, "箱子矩阵")) {
-    cv::destroyAllWindows();
-    releaseCamera();
+    cleanupRecognitionResources();
     return;
   }
 
   const auto grid = box_grid_detector_->detectStableGrid(camera_, recognition_keep_running_);
   if (!grid) {
     RCLCPP_INFO(get_logger(), "识别任务已停止");
-    cv::destroyAllWindows();
-    releaseCamera();
+    cleanupRecognitionResources();
     return;
   }
 
   if (!publishGridIfRecognitionActive(*grid)) {
     RCLCPP_INFO(get_logger(), "识别任务已停止，放弃发布 box_id_grid");
-    cv::destroyAllWindows();
-    releaseCamera();
+    cleanupRecognitionResources();
     return;
   }
 
   RCLCPP_INFO(get_logger(), "已发布 box_id_grid");
 
-  cv::destroyAllWindows();
-  releaseCamera();
+  cleanupRecognitionResources();
 }
 
 bool ArmNode::publishGridIfRecognitionActive(const std::array<int32_t, 8> & grid)

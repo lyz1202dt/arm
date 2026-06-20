@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <iostream>
+#include <mutex>
 #include <opencv2/highgui.hpp>
 #include <sstream>
 #include <stdexcept>
@@ -18,6 +19,7 @@ namespace
 constexpr std::size_t kGridSize = 8;
 constexpr std::size_t kVoteBufferSize = 7;
 constexpr std::chrono::milliseconds kFrameReadRetryDelay{50};
+constexpr char kPreviewWindowName[] = "...";
 
 using GridResult = std::array<int32_t, kGridSize>;
 using GridBuffer = std::array<std::optional<GridResult>, kVoteBufferSize>;
@@ -57,6 +59,19 @@ bool allSlotsValid(const GridBuffer & buffer)
   return std::all_of(buffer.begin(), buffer.end(), [](const auto & result) {
     return result.has_value();
   });
+}
+
+std::mutex & previewWindowMutex()
+{
+  static std::mutex mutex;
+  return mutex;
+}
+
+void showPreviewFrame(const cv::Mat & frame)
+{
+  std::lock_guard<std::mutex> lock(previewWindowMutex());
+  cv::imshow(kPreviewWindowName, frame);
+  cv::waitKey(1);
 }
 
 GridResult selectMajorityGrid(const GridBuffer & buffer, const std::size_t latest_slot)
@@ -101,6 +116,13 @@ BoxGridDetector::BoxGridDetector(std::shared_ptr<Inference> inference)
   }
 }
 
+void BoxGridDetector::destroyPreviewWindows()
+{
+  std::lock_guard<std::mutex> lock(previewWindowMutex());
+  cv::destroyAllWindows();
+  cv::waitKey(1);
+}
+
 std::optional<std::array<int32_t, 8>> BoxGridDetector::detectStableGrid(
   cv::VideoCapture & camera, const std::atomic_bool & keep_running)
 {
@@ -115,10 +137,21 @@ std::optional<std::array<int32_t, 8>> BoxGridDetector::detectStableGrid(
       continue;
     }
 
-    cv::imshow("...", frame);
-    cv::waitKey(1);
+    if (!keep_running.load()) {
+      break;
+    }
+
+    showPreviewFrame(frame);
+
+    if (!keep_running.load()) {
+      break;
+    }
 
     const auto current_ids = collectOrderedIds(frame);
+    if (!keep_running.load()) {
+      break;
+    }
+
     const std::size_t current_slot = next_slot;
     recent_grids[current_slot].reset();
     next_slot = (next_slot + 1) % recent_grids.size();

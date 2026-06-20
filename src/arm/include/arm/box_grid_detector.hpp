@@ -25,6 +25,8 @@ public:
   // 持续采样摄像头画面，使用最近 7 帧有效识别结果逐位置多数投票后返回。
   std::optional<std::array<int32_t, 8>> detectStableGrid(
     cv::VideoCapture & camera, const std::atomic_bool & keep_running);
+  // 销毁识别预览窗口；可由外部取消路径调用，保证窗口及时关闭。
+  static void destroyPreviewWindows();
 
 private:
   // 对单帧图像执行一次排序，提取当前帧从左上到右下的编号序列。
