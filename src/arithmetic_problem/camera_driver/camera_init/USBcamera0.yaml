@@ -6,7 +6,7 @@ camera_type: 0
 
 # 图像分辨率、帧率
 base_info:
-  weight: 1280
+  width: 1280
   height: 960
   fps: 80
 

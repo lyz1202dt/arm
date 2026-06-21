@@ -13,7 +13,7 @@ class Inference;
 
 namespace arithmetic_problem {
 
-// Calculator 把"取帧 -> 推理 -> 筛选 -> 拼算式 -> 计算 -> 取模 -> 多次结果众数统计"
+// Calculator 把"取帧 -> 推理 -> 筛选 -> 拼算式 -> 计算 -> 多次结果众数统计"
 // 封装为一次 run() 调用，返回最终稳定结果。
 class Calculator {
 public:

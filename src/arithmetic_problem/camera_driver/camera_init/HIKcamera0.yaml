@@ -15,7 +15,7 @@ camera_type: 1
 #                 656x496 
 # 宽高设置时需考虑步进(16)，即设置宽高需16的倍数
 base_info:
-   weight: 864 # 默认(-1)为最大 min 32 max 1440 Inc 4  60 
+   width: 864 # 默认(-1)为最大 min 32 max 1440 Inc 4  60 
    height: 800 # min 8 max 1080 Inc 4    49 
    fps: 100
 

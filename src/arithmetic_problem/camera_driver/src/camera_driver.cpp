@@ -1,5 +1,24 @@
 #include "camera_driver.h"
 
+namespace {
+
+int readIntWithFallback(const cv::FileNode& node, const char* primary_key, const char* fallback_key) {
+    int value = 0;
+    const cv::FileNode primary_node = node[primary_key];
+    if (!primary_node.empty()) {
+        primary_node >> value;
+        return value;
+    }
+
+    const cv::FileNode fallback_node = node[fallback_key];
+    if (!fallback_node.empty()) {
+        fallback_node >> value;
+    }
+    return value;
+}
+
+}  // namespace
+
 void camCallBack(unsigned char *pData, MV_FRAME_OUT_INFO_EX *pFrameInfo, void *pUser) {
     (void)pUser;
 
@@ -156,7 +175,7 @@ bool HK_Camera::cameraInit(const HIKInitStruct &t) {
            static_cast<long long>(stHeightMax.nCurValue));
     
     // 设置图像宽高，确保不超过最大值
-    int requestedWidth = t.width; // 注意：修改了参数名
+    int requestedWidth = t.width;
     int requestedHeight = t.height;
     
     if (requestedWidth <= 0 || requestedWidth > stWidthMax.nCurValue) {
@@ -675,11 +694,12 @@ Camera::Camera (const std::string initFilePath) : camera_is_open_(false) {
     }
 
     fs["camera_type"] >> camera_type_;
+    const cv::FileNode base_info = fs["base_info"];
 
     if (camera_type_ == USB) {
-        fs["base_info"]["width"] >> usb_init_.width;  // Changed from "weight" to "width"
-        fs["base_info"]["height"] >> usb_init_.height;
-        fs["base_info"]["fps"] >> usb_init_.fps;
+        usb_init_.width = readIntWithFallback(base_info, "width", "weight");
+        base_info["height"] >> usb_init_.height;
+        base_info["fps"] >> usb_init_.fps;
         fs["pixel_format"] >> usb_init_.video_capture_api;
         fs["index"] >> usb_init_.index;
         usb_init_.fourcc.clear();
@@ -689,9 +709,9 @@ Camera::Camera (const std::string initFilePath) : camera_is_open_(false) {
         }
 
     } else if (camera_type_ == HIK) {
-        fs["base_info"]["width"] >> hik_init_.width;  // Changed from "weight" to "width"
-        fs["base_info"]["height"] >> hik_init_.height;
-        fs["base_info"]["fps"] >> hik_init_.fps;
+        hik_init_.width = readIntWithFallback(base_info, "width", "weight");
+        base_info["height"] >> hik_init_.height;
+        base_info["fps"] >> hik_init_.fps;
         fs["hik_info"]["camera_mode"] >> hik_init_.camera_mode;
         fs["hik_info"]["exposure_time"] >> hik_init_.exposure_time;
         fs["pixel_format"] >> hik_init_.video_capture_api;
@@ -839,7 +859,7 @@ void Camera::open() {
         cap_ = new cv::VideoCapture(usb_init_.index, usb_init_.video_capture_api);
         cap_->set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc(
                 usb_init_.fourcc[0], usb_init_.fourcc[1], usb_init_.fourcc[2], usb_init_.fourcc[3]));
-        cap_->set(cv::CAP_PROP_FRAME_WIDTH, usb_init_.width);  // Changed from "weight" to "width"
+        cap_->set(cv::CAP_PROP_FRAME_WIDTH, usb_init_.width);
         cap_->set(cv::CAP_PROP_FRAME_HEIGHT, usb_init_.height);
         cap_->set(cv::CAP_PROP_FPS, usb_init_.fps);
         if (cap_->isOpened()) camera_is_open_ = true;

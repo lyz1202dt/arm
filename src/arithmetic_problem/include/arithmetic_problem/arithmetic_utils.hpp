@@ -188,7 +188,6 @@ inline bool tryCalcExpression(const std::string& expr, long long& result) {
     return true;
 }
 
-// 把结果对 4 取模，得到 1-4 之间的正整数
 inline int modTo1_4(long long result) {
     long long answer = result;
     if (answer <= 0) answer += 4;
