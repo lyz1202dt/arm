@@ -27,7 +27,7 @@ public:
         std::size_t min_samples{20};
         double dominance_threshold{0.80};
         std::chrono::milliseconds timeout{5000};
-        bool show_window{false};
+        bool show_window{true};
     };
 
     struct Result {

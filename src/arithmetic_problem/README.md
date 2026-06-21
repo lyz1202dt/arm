@@ -42,7 +42,7 @@ ros2 topic info -v /vip_box_id
 | `model_input_width` | `int` | `640` | ONNX 模型输入宽度 |
 | `model_input_height` | `int` | `640` | ONNX 模型输入高度 |
 | `run_with_cuda` | `bool` | `true` | 是否使用 OpenCV DNN CUDA 后端 |
-| `show_window` | `bool` | `false` | 是否显示识别调试窗口 |
+| `show_window` | `bool` | `true` | 是否显示识别调试窗口 |
 | `min_samples` | `int` | `20` | 至少采集多少个有效样本后才允许输出稳定结果 |
 | `max_samples` | `int` | `100` | 单次任务最多采集多少个有效样本 |
 | `dominance_threshold` | `double` | `0.80` | 众数占比超过该阈值时提前结束采样 |
@@ -80,6 +80,12 @@ ros2 run arithmetic_problem arithmetic_problem --ros-args \
 
 ```bash
 ros2 run arithmetic_problem arithmetic_problem --ros-args -p run_with_cuda:=false
+```
+
+无图形界面环境运行时，关闭调试窗口：
+
+```bash
+ros2 run arithmetic_problem arithmetic_problem --ros-args -p show_window:=false
 ```
 
 也可以通过环境变量指定默认路径：
@@ -170,6 +176,6 @@ src/arithmetic_problem/camera_driver/camera_init/USBcamera1.yaml
 
 - 本节点没有订阅话题、普通服务或 action；对外控制入口主要是 ROS 2 参数服务。
 - `vip_box_id` 使用 transient local QoS，后启动的订阅者通常可以收到最近一次发布的结果。
-- `show_window=true` 需要图形界面环境；无显示环境运行时保持 `false`。
+- `show_window=true` 需要图形界面环境；无显示环境运行时设置 `show_window:=false`。
 - 默认路径来自编译时源码目录。部署到其他机器或目录后，建议显式传入 `camera_config_path` 和 `onnx_model_path`。
 - 如果没有结果输出，优先检查相机是否打开、模型路径是否正确、`run_with_cuda` 是否适合当前机器，以及是否已经设置 `start_calc=true`。

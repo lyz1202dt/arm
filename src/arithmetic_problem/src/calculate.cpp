@@ -469,7 +469,7 @@ Calculator::Result Calculator::run() {
 
         std::cout << "[Calculator] 算式: " << expression
                   << " | 原始: " << evaluation.raw
-                  << " | mod4: " << evaluation.answer << std::endl;
+                  << " | 结果: " << evaluation.answer << std::endl;
 
         const bool should_add_sample = shouldAddSampleForFrame(
             is_complete_frame,

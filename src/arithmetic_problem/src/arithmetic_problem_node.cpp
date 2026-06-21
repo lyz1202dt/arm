@@ -68,7 +68,7 @@ ArithmeticProblemNode::ArithmeticProblemNode()
     declare_parameter<int>("model_input_width", 640);
     declare_parameter<int>("model_input_height", 640);
     declare_parameter<bool>("run_with_cuda", true);
-    declare_parameter<bool>("show_window", false);
+    declare_parameter<bool>("show_window", true);
     declare_parameter<int>("min_samples", 20);
     declare_parameter<int>("max_samples", 100);
     declare_parameter<double>("dominance_threshold", 0.80);
