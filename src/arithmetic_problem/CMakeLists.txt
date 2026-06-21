@@ -11,6 +11,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # ============ 依赖 ============
 find_package(ament_cmake REQUIRED)
+find_package(rcl_interfaces REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(OpenCV REQUIRED)
@@ -40,6 +41,7 @@ target_compile_features(calculate PUBLIC cxx_std_17)
 
 # ============ 主可执行：ROS2 节点 ============
 add_executable(arithmetic_problem
+  src/arithmetic_problem_node.cpp
   src/main.cpp
 )
 
@@ -59,6 +61,7 @@ target_link_libraries(arithmetic_problem
 )
 
 ament_target_dependencies(arithmetic_problem
+  rcl_interfaces
   rclcpp
   std_msgs
 )
