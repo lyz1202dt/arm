@@ -61,7 +61,7 @@ ArithmeticProblemNode::ArithmeticProblemNode()
         "camera_config_path",
         getEnvOrDefault(
             "ARITHMETIC_CAMERA_CONFIG",
-            package_source_dir + "/include/camera_driver/camera_init/HIKcamera0.yaml"));
+            package_source_dir + "/camera_driver/camera_init/HIKcamera0.yaml"));
     declare_parameter<std::string>(
         "onnx_model_path",
         getEnvOrDefault("ARITHMETIC_ONNX_MODEL", package_source_dir + "/src/best.onnx"));

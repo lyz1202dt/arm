@@ -19,8 +19,8 @@ find_package(std_msgs REQUIRED)
 find_package(OpenCV REQUIRED)
 
 # 子项目：海康相机 + ONNX 推理封装
-# include/camera_driver 是一个独立 CMake 子项目，编译为 camera_driver 静态库
-add_subdirectory(include/camera_driver)
+# camera_driver 是一个独立 CMake 子项目，编译为 camera_driver 静态库
+add_subdirectory(camera_driver)
 
 # ============ calculate 库 ============
 # 把"取帧 + 推理 + 筛选 + 算式 + 众数统计"封装到一个共享库
@@ -30,7 +30,7 @@ add_library(calculate
 
 target_include_directories(calculate PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/camera_driver/include>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/camera_driver/include>
   $<INSTALL_INTERFACE:include>
 )
 
@@ -84,7 +84,7 @@ install(DIRECTORY include/arithmetic_problem
 )
 
 # 海康 SDK 动态库一并装上，运行期 dlopen 才能找到
-install(DIRECTORY include/camera_driver/lib/
+install(DIRECTORY camera_driver/lib/
   DESTINATION lib
   FILES_MATCHING PATTERN "*.so*"
 )
