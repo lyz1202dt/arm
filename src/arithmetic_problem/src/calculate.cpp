@@ -119,6 +119,72 @@ struct PendingObservation {
     std::vector<int> answers;
 };
 
+class DebugWindow {
+public:
+    explicit DebugWindow(bool enabled) : enabled_(enabled) {
+        if (enabled_) {
+            cv::namedWindow(kWindowName, cv::WINDOW_NORMAL);
+        }
+    }
+
+    ~DebugWindow() {
+        if (enabled_) {
+            cv::destroyWindow(kWindowName);
+        }
+    }
+
+    DebugWindow(const DebugWindow&) = delete;
+    DebugWindow& operator=(const DebugWindow&) = delete;
+
+    bool show(
+        const cv::Mat& frame,
+        const std::vector<Detection>& detections,
+        const std::string& expression,
+        const std::string& status) const {
+        if (!enabled_) {
+            return true;
+        }
+
+        cv::Mat display = frame.clone();
+        for (const auto& detection : detections) {
+            cv::rectangle(display, detection.box, cv::Scalar(0, 255, 0), 2);
+            cv::putText(
+                display,
+                detection.className,
+                cv::Point(detection.box.x, std::max(20, detection.box.y - 5)),
+                cv::FONT_HERSHEY_SIMPLEX,
+                0.7,
+                cv::Scalar(0, 255, 0),
+                2);
+        }
+
+        const std::string expr_line = expression.empty() ? "Expr: -" : "Expr: " + expression;
+        cv::putText(
+            display,
+            expr_line,
+            cv::Point(20, 40),
+            cv::FONT_HERSHEY_SIMPLEX,
+            1.0,
+            cv::Scalar(0, 0, 255),
+            2);
+        cv::putText(
+            display,
+            status,
+            cv::Point(20, 80),
+            cv::FONT_HERSHEY_SIMPLEX,
+            0.8,
+            cv::Scalar(0, 0, 255),
+            2);
+
+        cv::imshow(kWindowName, display);
+        const char key = static_cast<char>(cv::waitKey(1));
+        return key != 'q' && key != 27;
+    }
+
+private:
+    bool enabled_{false};
+};
+
 void logRuntimeEnvironment() {
     std::cout << "===== Calculator 启动 =====" << std::endl;
     std::cout << "OpenCV 版本: " << CV_VERSION
@@ -212,6 +278,20 @@ void logRejectedExpression(ExpressionStatus status, const std::string& expressio
     }
 }
 
+std::string expressionStatusText(ExpressionStatus status) {
+    switch (status) {
+        case ExpressionStatus::kOddParentheses:
+            return "Rejected: odd parentheses";
+        case ExpressionStatus::kInvalidStructure:
+            return "Rejected: invalid expression";
+        case ExpressionStatus::kCalculationFailed:
+            return "Rejected: calculation failed";
+        case ExpressionStatus::kOk:
+            return "OK";
+    }
+    return "Unknown";
+}
+
 void resetInvalidLargerCandidate(
     bool is_larger_candidate,
     std::size_t current_count,
@@ -265,40 +345,6 @@ bool shouldAddSampleForFrame(
               << " 连续三帧结果一致性不足，放弃本轮观察" << std::endl;
     pending.reset();
     return false;
-}
-
-bool showDebugFrame(
-    const cv::Mat& frame,
-    const std::vector<Detection>& detections,
-    const std::string& expression,
-    int answer) {
-    cv::Mat display = frame.clone();
-
-    for (const auto& detection : detections) {
-        cv::rectangle(display, detection.box, cv::Scalar(0, 255, 0), 2);
-        cv::putText(
-            display,
-            detection.className,
-            cv::Point(detection.box.x, detection.box.y - 5),
-            cv::FONT_HERSHEY_SIMPLEX,
-            0.7,
-            cv::Scalar(0, 255, 0),
-            2);
-    }
-
-    const std::string info = "Expr: " + expression + "  mod4 = " + std::to_string(answer);
-    cv::putText(
-        display,
-        info,
-        cv::Point(20, 40),
-        cv::FONT_HERSHEY_SIMPLEX,
-        1.0,
-        cv::Scalar(0, 0, 255),
-        2);
-    cv::imshow(kWindowName, display);
-
-    const char key = static_cast<char>(cv::waitKey(1));
-    return key != 'q' && key != 27;
 }
 
 bool reachedTimeout(
@@ -357,9 +403,6 @@ Calculator::Calculator(const Config& config) : config_(config) {
 }
 
 Calculator::~Calculator() {
-    if (config_.show_window) {
-        cv::destroyAllWindows();
-    }
 }
 
 Calculator::Result Calculator::run() {
@@ -371,10 +414,7 @@ Calculator::Result Calculator::run() {
     }
 
     logRuntimeEnvironment();
-
-    if (config_.show_window) {
-        cv::namedWindow(kWindowName, cv::WINDOW_NORMAL);
-    }
+    DebugWindow debug_window(config_.show_window);
 
     SampleStatistics statistics(config_.max_samples);
     PendingObservation pending;
@@ -395,14 +435,21 @@ Calculator::Result Calculator::run() {
             continue;
         }
 
-        std::vector<Detection> filtered = filterExpressionTargets(detector_->runInference(frame));
+        const std::vector<Detection> detections = detector_->runInference(frame);
+        std::vector<Detection> filtered = filterExpressionTargets(detections);
         if (filtered.empty()) {
+            if (!debug_window.show(frame, detections, "", "Waiting for expression")) {
+                break;
+            }
             continue;
         }
 
         const std::size_t current_count = filtered.size();
         if (current_count < max_count_seen) {
             pending.reset();
+            if (!debug_window.show(frame, filtered, "", "Skipped: incomplete frame")) {
+                break;
+            }
             continue;
         }
 
@@ -414,6 +461,9 @@ Calculator::Result Calculator::run() {
         if (evaluation.status != ExpressionStatus::kOk) {
             logRejectedExpression(evaluation.status, expression);
             resetInvalidLargerCandidate(is_larger_candidate, current_count, pending);
+            if (!debug_window.show(frame, filtered, expression, expressionStatusText(evaluation.status))) {
+                break;
+            }
             continue;
         }
 
@@ -435,8 +485,10 @@ Calculator::Result Calculator::run() {
             result.last_expression = last_expression;
         }
 
-        if (config_.show_window &&
-            !showDebugFrame(frame, filtered, expression, evaluation.answer)) {
+        const std::string status = "Answer: " + std::to_string(evaluation.answer) +
+            "  Samples: " + std::to_string(statistics.size()) +
+            "/" + std::to_string(config_.max_samples);
+        if (!debug_window.show(frame, filtered, expression, status)) {
             break;
         }
 
