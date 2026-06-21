@@ -192,7 +192,7 @@ EvaluationResult evaluateExpression(std::string& expression) {
         return result;
     }
 
-    result.answer = modTo1_4(result.raw);
+    result.answer = result.raw;
     return result;
 }
 
