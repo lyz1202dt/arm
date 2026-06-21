@@ -128,13 +128,48 @@ public:
     }
 
     ~DebugWindow() {
-        if (enabled_) {
-            cv::destroyWindow(kWindowName);
+        close();
+    }
+
+    void close() noexcept {
+        if (!enabled_ || closed_) {
+            return;
         }
+
+        try {
+            cv::destroyWindow(kWindowName);
+            for (int i = 0; i < 5; ++i) {
+                cv::waitKey(1);
+            }
+        } catch (const cv::Exception& exception) {
+            std::cerr << "[Calculator] 销毁调试窗口失败: " << exception.what() << std::endl;
+        }
+
+        closed_ = true;
     }
 
     DebugWindow(const DebugWindow&) = delete;
     DebugWindow& operator=(const DebugWindow&) = delete;
+
+    bool showStatus(const std::string& status) const {
+        if (!enabled_) {
+            return true;
+        }
+
+        cv::Mat display = cv::Mat::zeros(360, 640, CV_8UC3);
+        cv::putText(
+            display,
+            status,
+            cv::Point(20, 60),
+            cv::FONT_HERSHEY_SIMPLEX,
+            0.8,
+            cv::Scalar(0, 0, 255),
+            2);
+
+        cv::imshow(kWindowName, display);
+        const char key = static_cast<char>(cv::waitKey(1));
+        return key != 'q' && key != 27;
+    }
 
     bool show(
         const cv::Mat& frame,
@@ -145,7 +180,11 @@ public:
             return true;
         }
 
-        cv::Mat display = frame.clone();
+        cv::Mat display = makeDisplayFrame(frame);
+        if (display.empty()) {
+            return showStatus("No displayable frame");
+        }
+
         for (const auto& detection : detections) {
             cv::rectangle(display, detection.box, cv::Scalar(0, 255, 0), 2);
             cv::putText(
@@ -182,7 +221,30 @@ public:
     }
 
 private:
+    static cv::Mat makeDisplayFrame(const cv::Mat& frame) {
+        if (frame.empty()) {
+            return {};
+        }
+
+        cv::Mat display;
+        if (frame.depth() == CV_8U) {
+            display = frame.clone();
+        } else {
+            cv::normalize(frame, display, 0, 255, cv::NORM_MINMAX);
+            display.convertTo(display, CV_8U);
+        }
+
+        if (display.channels() == 1) {
+            cv::cvtColor(display, display, cv::COLOR_GRAY2BGR);
+        } else if (display.channels() == 4) {
+            cv::cvtColor(display, display, cv::COLOR_BGRA2BGR);
+        }
+
+        return display;
+    }
+
     bool enabled_{false};
+    bool closed_{false};
 };
 
 void logRuntimeEnvironment() {
@@ -432,7 +494,17 @@ Calculator::Result Calculator::run() {
 
         cv::Mat frame;
         if (!camera_->getFrame(frame) || frame.empty()) {
+            if (!debug_window.showStatus("No camera frame")) {
+                break;
+            }
             continue;
+        }
+
+        const std::string frame_status = "Camera frame: " +
+            std::to_string(frame.cols) + "x" + std::to_string(frame.rows) +
+            "  channels: " + std::to_string(frame.channels());
+        if (!debug_window.show(frame, {}, "", frame_status)) {
+            break;
         }
 
         const std::vector<Detection> detections = detector_->runInference(frame);
@@ -502,11 +574,13 @@ Calculator::Result Calculator::run() {
             std::cout << "[Calculator] 提前收敛: 众数=" << result.answer
                       << ", 占比=" << (result.dominance * 100.0) << "%"
                       << ", 样本数=" << result.sample_count << std::endl;
+            debug_window.close();
             return result;
         }
     }
 
     fillFinalResult(statistics, config_.min_samples, result);
+    debug_window.close();
     return result;
 }
 
