@@ -1,5 +1,9 @@
 #include "arithmetic_problem/arithmetic_problem_node.hpp"
 
+#include "camera_driver.h"
+
+#include <opencv2/highgui.hpp>
+
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
@@ -12,6 +16,8 @@ namespace {
 
 constexpr int kQueueSize = 10;
 constexpr char kStartCalcParameter[] = "start_calc";
+constexpr char kShowImageParameter[] = "show_image";
+constexpr char kPreviewWindowName[] = "Arithmetic Camera Preview";
 
 std::string getEnvOrDefault(const char* name, const std::string& fallback) {
     const char* value = std::getenv(name);
@@ -74,6 +80,7 @@ ArithmeticProblemNode::ArithmeticProblemNode()
     declare_parameter<double>("dominance_threshold", 0.80);
     declare_parameter<int>("timeout_ms", 5000);
     declare_parameter<bool>(kStartCalcParameter, false);
+    declare_parameter<bool>(kShowImageParameter, false);
 
     vip_box_pub_ = create_publisher<std_msgs::msg::Int32>(
         "vip_box_id", rclcpp::QoS(1).reliable().transient_local());
@@ -84,6 +91,7 @@ ArithmeticProblemNode::ArithmeticProblemNode()
         });
 
     calc_worker_ = std::thread(&ArithmeticProblemNode::calculationWorker, this);
+    preview_worker_ = std::thread(&ArithmeticProblemNode::previewWorker, this);
 
     RCLCPP_INFO(
         get_logger(),
@@ -92,9 +100,13 @@ ArithmeticProblemNode::ArithmeticProblemNode()
 
 ArithmeticProblemNode::~ArithmeticProblemNode() {
     worker_running_.store(false);
+    preview_enabled_.store(false);
     calc_signal_.post();
     if (calc_worker_.joinable()) {
         calc_worker_.join();
+    }
+    if (preview_worker_.joinable()) {
+        preview_worker_.join();
     }
 }
 
@@ -104,20 +116,36 @@ rcl_interfaces::msg::SetParametersResult ArithmeticProblemNode::onParametersChan
     result.successful = true;
 
     bool start_requested = false;
+    bool preview_enabled = preview_enabled_.load();
+    bool preview_param_updated = false;
     for (const auto& parameter : parameters) {
-        if (parameter.get_name() != kStartCalcParameter) {
+        if (parameter.get_name() == kStartCalcParameter) {
+            if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_BOOL) {
+                result.successful = false;
+                result.reason = "start_calc 必须是 bool 类型";
+                return result;
+            }
+
+            if (parameter.as_bool()) {
+                start_requested = true;
+            }
             continue;
         }
 
-        if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_BOOL) {
-            result.successful = false;
-            result.reason = "start_calc 必须是 bool 类型";
-            return result;
-        }
+        if (parameter.get_name() == kShowImageParameter) {
+            if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_BOOL) {
+                result.successful = false;
+                result.reason = "show_image 必须是 bool 类型";
+                return result;
+            }
 
-        if (parameter.as_bool()) {
-            start_requested = true;
+            preview_enabled = parameter.as_bool();
+            preview_param_updated = true;
         }
+    }
+
+    if (preview_param_updated) {
+        updatePreviewState(preview_enabled);
     }
 
     if (start_requested) {
@@ -134,8 +162,12 @@ bool ArithmeticProblemNode::requestCalculation(const char* source) {
         return false;
     }
 
+    preview_needs_restart_.store(preview_enabled_.load());
+    preview_enabled_.store(false);
+
     if (!calc_signal_.post()) {
         calc_task_busy_.store(false);
+        preview_enabled_.store(preview_needs_restart_.load());
         RCLCPP_ERROR(get_logger(), "计算任务信号量通知失败，丢弃触发来源: %s", source);
         return false;
     }
@@ -158,10 +190,86 @@ void ArithmeticProblemNode::calculationWorker() {
         handleCalculation();
         calc_task_busy_.store(false);
 
+        const bool should_resume_preview = preview_needs_restart_.exchange(false);
+        if (should_resume_preview) {
+            preview_enabled_.store(true);
+        }
+
         try {
             set_parameter(rclcpp::Parameter(kStartCalcParameter, false));
         } catch (const std::exception& exception) {
             RCLCPP_WARN(get_logger(), "重置 start_calc 参数失败: %s", exception.what());
+        }
+    }
+}
+
+void ArithmeticProblemNode::updatePreviewState(bool enabled) {
+    std::lock_guard<std::mutex> lock(preview_state_mutex_);
+    preview_enabled_.store(enabled);
+    if (!enabled) {
+        preview_needs_restart_.store(false);
+    }
+}
+
+void ArithmeticProblemNode::previewWorker() {
+    bool window_open = false;
+
+    while (worker_running_.load()) {
+        if (!preview_enabled_.load()) {
+            if (window_open) {
+                cv::destroyWindow(kPreviewWindowName);
+                for (int i = 0; i < 5; ++i) {
+                    cv::waitKey(1);
+                }
+                window_open = false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+            continue;
+        }
+
+        Calculator::Config config;
+        try {
+            config = loadCalculatorConfig();
+        } catch (const std::exception& exception) {
+            RCLCPP_ERROR(get_logger(), "加载预览配置失败: %s", exception.what());
+            preview_enabled_.store(false);
+            continue;
+        }
+
+        auto camera = std::make_unique<Camera>(config.camera_config_path);
+        if (!camera->isOpened()) {
+            RCLCPP_ERROR(get_logger(), "预览模式打开相机失败: %s", config.camera_config_path.c_str());
+            preview_enabled_.store(false);
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            continue;
+        }
+
+        cv::namedWindow(kPreviewWindowName, cv::WINDOW_NORMAL);
+        window_open = true;
+
+        while (worker_running_.load() && preview_enabled_.load()) {
+            cv::Mat frame;
+            if (!camera->getFrame(frame) || frame.empty()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                continue;
+            }
+
+            cv::Mat display = arithmetic_problem::makeArithmeticDisplayFrame(frame);
+            if (display.empty()) {
+                continue;
+            }
+
+            cv::imshow(kPreviewWindowName, display);
+            cv::waitKey(1);
+        }
+
+        camera.reset();
+    }
+
+    if (window_open) {
+        cv::destroyWindow(kPreviewWindowName);
+        for (int i = 0; i < 5; ++i) {
+            cv::waitKey(1);
         }
     }
 }

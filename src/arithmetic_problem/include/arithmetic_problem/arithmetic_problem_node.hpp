@@ -3,11 +3,14 @@
 
 #include "arithmetic_problem/calculate.hpp"
 
+#include <chrono>
 #include <atomic>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <opencv2/core.hpp>
 
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -41,7 +44,9 @@ private:
         const std::vector<rclcpp::Parameter>& parameters);
     bool requestCalculation(const char* source);
     void calculationWorker();
+    void previewWorker();
     void handleCalculation();
+    void updatePreviewState(bool enabled);
     Calculator::Config loadCalculatorConfig() const;
     bool publishResultIfActive(const Calculator::Result& result);
 
@@ -50,9 +55,13 @@ private:
 
     CommandSemaphore calc_signal_;
     std::atomic_bool worker_running_{true};
+    std::atomic_bool preview_enabled_{false};
+    std::atomic_bool preview_needs_restart_{false};
     std::atomic_bool calc_task_busy_{false};
     std::mutex calc_state_mutex_;
+    std::mutex preview_state_mutex_;
     std::thread calc_worker_;
+    std::thread preview_worker_;
 };
 
 }  // namespace arithmetic_problem

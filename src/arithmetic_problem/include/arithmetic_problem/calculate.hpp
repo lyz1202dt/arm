@@ -7,14 +7,18 @@
 #include <cstddef>
 #include <memory>
 #include <string>
+#include <vector>
 
 class Camera;
 class Inference;
+struct Detection;
 
 namespace arithmetic_problem {
 
 // Calculator 把"取帧 -> 推理 -> 筛选 -> 拼算式 -> 计算 -> 多次结果众数统计"
 // 封装为一次 run() 调用，返回最终稳定结果。
+cv::Mat makeArithmeticDisplayFrame(const cv::Mat& frame);
+
 class Calculator {
 public:
     struct Config {
@@ -51,6 +55,12 @@ private:
     std::unique_ptr<Camera> camera_;
     std::unique_ptr<Inference> detector_;
 };
+
+cv::Mat drawArithmeticDebugFrame(
+    const cv::Mat& frame,
+    const std::vector<Detection>& detections,
+    const std::string& expression,
+    const std::string& status);
 
 }  // namespace arithmetic_problem
 

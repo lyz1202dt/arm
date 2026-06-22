@@ -16,9 +16,14 @@
 #include <unordered_map>
 #include <vector>
 
-namespace arithmetic_problem {
-
 namespace {
+
+using arithmetic_problem::Calculator;
+using arithmetic_problem::classIdToChar;
+using arithmetic_problem::isAcceptableExpression;
+using arithmetic_problem::isOperator;
+using arithmetic_problem::normalizeParentheses;
+using arithmetic_problem::tryCalcExpression;
 
 constexpr char kWindowName[] = "Arithmetic Recognition";
 
@@ -119,6 +124,75 @@ struct PendingObservation {
     std::vector<int> answers;
 };
 
+}  // namespace
+
+namespace arithmetic_problem {
+
+cv::Mat makeArithmeticDisplayFrame(const cv::Mat& frame) {
+    if (frame.empty()) {
+        return {};
+    }
+
+    cv::Mat display;
+    if (frame.depth() == CV_8U) {
+        display = frame.clone();
+    } else {
+        cv::normalize(frame, display, 0, 255, cv::NORM_MINMAX);
+        display.convertTo(display, CV_8U);
+    }
+
+    if (display.channels() == 1) {
+        cv::cvtColor(display, display, cv::COLOR_GRAY2BGR);
+    } else if (display.channels() == 4) {
+        cv::cvtColor(display, display, cv::COLOR_BGRA2BGR);
+    }
+
+    return display;
+}
+
+cv::Mat drawArithmeticDebugFrame(
+    const cv::Mat& frame,
+    const std::vector<Detection>& detections,
+    const std::string& expression,
+    const std::string& status) {
+    cv::Mat display = makeArithmeticDisplayFrame(frame);
+    if (display.empty()) {
+        return display;
+    }
+
+    for (const auto& detection : detections) {
+        cv::rectangle(display, detection.box, cv::Scalar(0, 255, 0), 2);
+        cv::putText(
+            display,
+            detection.className,
+            cv::Point(detection.box.x, std::max(20, detection.box.y - 5)),
+            cv::FONT_HERSHEY_SIMPLEX,
+            0.7,
+            cv::Scalar(0, 255, 0),
+            2);
+    }
+
+    const std::string expr_line = expression.empty() ? "Expr: -" : "Expr: " + expression;
+    cv::putText(
+        display,
+        expr_line,
+        cv::Point(20, 40),
+        cv::FONT_HERSHEY_SIMPLEX,
+        1.0,
+        cv::Scalar(0, 0, 255),
+        2);
+    cv::putText(
+        display,
+        status,
+        cv::Point(20, 80),
+        cv::FONT_HERSHEY_SIMPLEX,
+        0.8,
+        cv::Scalar(0, 0, 255),
+        2);
+
+    return display;
+}
+
 class DebugWindow {
 public:
     explicit DebugWindow(bool enabled) : enabled_(enabled) {
@@ -180,40 +254,10 @@ public:
             return true;
         }
 
-        cv::Mat display = makeDisplayFrame(frame);
+        cv::Mat display = drawArithmeticDebugFrame(frame, detections, expression, status);
         if (display.empty()) {
             return showStatus("No displayable frame");
         }
-
-        for (const auto& detection : detections) {
-            cv::rectangle(display, detection.box, cv::Scalar(0, 255, 0), 2);
-            cv::putText(
-                display,
-                detection.className,
-                cv::Point(detection.box.x, std::max(20, detection.box.y - 5)),
-                cv::FONT_HERSHEY_SIMPLEX,
-                0.7,
-                cv::Scalar(0, 255, 0),
-                2);
-        }
-
-        const std::string expr_line = expression.empty() ? "Expr: -" : "Expr: " + expression;
-        cv::putText(
-            display,
-            expr_line,
-            cv::Point(20, 40),
-            cv::FONT_HERSHEY_SIMPLEX,
-            1.0,
-            cv::Scalar(0, 0, 255),
-            2);
-        cv::putText(
-            display,
-            status,
-            cv::Point(20, 80),
-            cv::FONT_HERSHEY_SIMPLEX,
-            0.8,
-            cv::Scalar(0, 0, 255),
-            2);
 
         cv::imshow(kWindowName, display);
         const char key = static_cast<char>(cv::waitKey(1));
@@ -221,28 +265,6 @@ public:
     }
 
 private:
-    static cv::Mat makeDisplayFrame(const cv::Mat& frame) {
-        if (frame.empty()) {
-            return {};
-        }
-
-        cv::Mat display;
-        if (frame.depth() == CV_8U) {
-            display = frame.clone();
-        } else {
-            cv::normalize(frame, display, 0, 255, cv::NORM_MINMAX);
-            display.convertTo(display, CV_8U);
-        }
-
-        if (display.channels() == 1) {
-            cv::cvtColor(display, display, cv::COLOR_GRAY2BGR);
-        } else if (display.channels() == 4) {
-            cv::cvtColor(display, display, cv::COLOR_BGRA2BGR);
-        }
-
-        return display;
-    }
-
     bool enabled_{false};
     bool closed_{false};
 };
@@ -446,6 +468,8 @@ void fillFinalResult(
 }
 
 }  // namespace
+
+namespace arithmetic_problem {
 
 Calculator::Calculator(const Config& config) : config_(config) {
     camera_ = std::make_unique<Camera>(config_.camera_config_path);
