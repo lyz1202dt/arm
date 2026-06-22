@@ -13,7 +13,7 @@ def generate_launch_description():
         Node(
             package='arithmetic_problem',
             executable='arithmetic_problem',
-            name='arithmetic_problem_vision_task',
+            name='arithmetic_problem_node',
             output='screen',
         ),
     ])
