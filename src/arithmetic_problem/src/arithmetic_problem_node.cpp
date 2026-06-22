@@ -73,7 +73,7 @@ ArithmeticProblemNode::ArithmeticProblemNode()
         getEnvOrDefault("ARITHMETIC_ONNX_MODEL", package_source_dir + "/src/best.onnx"));
     declare_parameter<int>("model_input_width", 640);
     declare_parameter<int>("model_input_height", 640);
-    declare_parameter<bool>("run_with_cuda", true);
+    declare_parameter<bool>("run_with_cuda", false);
     declare_parameter<bool>("show_window", true);
     declare_parameter<int>("min_samples", 20);
     declare_parameter<int>("max_samples", 100);
