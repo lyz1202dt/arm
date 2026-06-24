@@ -111,6 +111,7 @@ private:
   std::atomic_bool worker_running_{true};
   std::atomic_bool recognition_keep_running_{false};
   std::atomic_bool vision_task_busy_{false};
+  std::atomic_bool pnp_stop_requested_{false};
   std::mutex recognition_state_mutex_;
   std::thread vision_worker_;
   RecognitionTask pending_task_{RecognitionTask::BoxGrid};

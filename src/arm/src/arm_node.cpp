@@ -187,12 +187,14 @@ rcl_interfaces::msg::SetParametersResult ArmNode::onParametersChanged(
   }
 
   if (start_pnp_requested) {
+    pnp_stop_requested_.store(false);
     requestRecognition(RecognitionTask::Pnp, "start_pnp 参数");
   }
 
   if (stop_pnp_requested) {
     std::lock_guard<std::mutex> lock(recognition_state_mutex_);
     if (active_task_ && *active_task_ == RecognitionTask::Pnp) {
+      pnp_stop_requested_.store(true);
       recognition_keep_running_.store(false);
       destroyRecognitionUi();
       RCLCPP_INFO(get_logger(), "已请求停止当前箱子位置识别，来源: start_pnp=false");
@@ -416,6 +418,7 @@ void ArmNode::runPnp()
 {
   RCLCPP_INFO(get_logger(), "开始识别箱子位置");
   resetPnpWindow();
+  pnp_stop_requested_.store(false);
   last_variance_update_ = std::chrono::steady_clock::now();
 
   while (worker_running_.load()) {
@@ -436,30 +439,28 @@ void ArmNode::runPnp()
 
     const PnpWindowStats stats = computePnpWindowStats();
     updateVisionVarianceParameter(stats.variance_sum);
+  }
 
-    if (stats.var_x <= kPnpVarianceThreshold && stats.var_y <= kPnpVarianceThreshold) {
+  const bool stop_requested = pnp_stop_requested_.load();
+  if (stop_requested) {
+    if (hasFullPnpWindow()) {
+      const PnpWindowStats stats = computePnpWindowStats();
+      updateVisionVarianceParameter(stats.variance_sum);
       publishPnpPoint(stats.mean_x, stats.mean_y, stats.mean_z);
       RCLCPP_INFO(
-        get_logger(), "已发布稳定 pnp_move: x=%.4f y=%.4f z=%.4f",
+        get_logger(), "start_pnp=false，已发布最后五帧均值: x=%.4f y=%.4f z=%.4f",
         stats.mean_x, stats.mean_y, stats.mean_z);
-      cleanupRecognitionResources();
-      return;
+    } else {
+      RCLCPP_WARN(get_logger(), "start_pnp=false，但当前不足五帧有效结果，未发布 pnp_move");
     }
   }
 
-  if (hasFullPnpWindow()) {
-    const PnpWindowStats stats = computePnpWindowStats();
-    updateVisionVarianceParameter(stats.variance_sum);
-    publishPnpPoint(stats.mean_x, stats.mean_y, stats.mean_z);
-    RCLCPP_INFO(
-      get_logger(), "箱子位置识别结束，已发布当前滑动稳定窗口结果: x=%.4f y=%.4f z=%.4f",
-      stats.mean_x, stats.mean_y, stats.mean_z);
-  } else {
-    publishPnpFailure();
-    RCLCPP_WARN(get_logger(), "箱子位置识别未形成可用滑动稳定窗口，已发布失败位置结果");
-  }
-
   cleanupRecognitionResources();
+
+  if (stop_requested) {
+    RCLCPP_INFO(get_logger(), "箱子位置识别已结束，arm_node 即将退出");
+    rclcpp::shutdown();
+  }
 }
 
 void ArmNode::resetPnpWindow()
