@@ -10,6 +10,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(ament_cmake REQUIRED)
 find_package(OpenCV REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(rcl_interfaces REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -26,6 +27,7 @@ target_compile_features(arm_inference PUBLIC cxx_std_17)
 
 add_library(arm_vision
   src/box_grid_detector.cpp
+  src/pnp_detector.cpp
 )
 target_include_directories(arm_vision PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -41,7 +43,7 @@ target_include_directories(arm_node PUBLIC
 )
 target_link_libraries(arm_node arm_vision arm_inference ${OpenCV_LIBS})
 target_compile_features(arm_node PUBLIC cxx_std_17)
-ament_target_dependencies(arm_node rcl_interfaces rclcpp std_msgs)
+ament_target_dependencies(arm_node geometry_msgs rcl_interfaces rclcpp std_msgs)
 
 install(TARGETS arm_node arm_inference arm_vision
   DESTINATION lib/${PROJECT_NAME})

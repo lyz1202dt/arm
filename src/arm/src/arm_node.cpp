@@ -1,8 +1,9 @@
-// 机械臂视觉 ROS2 主节点，负责相机初始化、命令分发和箱子矩阵识别结果发布。
+// 机械臂视觉 ROS2 主节点，负责相机初始化、命令分发和识别结果发布。
 #include <arm/arm_node.hpp>
 
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <memory>
 #include <stdexcept>
@@ -13,16 +14,24 @@
 
 #include <arm/inference.hpp>
 #include <opencv2/core.hpp>
+#include <opencv2/highgui.hpp>
 #include <rclcpp/rclcpp.hpp>
 
 namespace
 {
 constexpr int kQueueSize = 50000;
- const char* kDefaultCameraIndex = "/dev/v4l/by-id/usb-HD_Camera_Manufacturer_USB_2.0_Camera-video-index0";
+const char * kDefaultCameraIndex = "/dev/v4l/by-id/usb-HD_Camera_Manufacturer_USB_2.0_Camera-video-index0";
 constexpr int kCameraReadMaxRetries = 10;
 constexpr char kStartRecognitionParameter[] = "start_recognition";
+constexpr char kStartPnpParameter[] = "start_pnp";
 constexpr char kCancelRecognitionParameter[] = "cancel_recognition";
+constexpr char kVisionVarianceParameter[] = "vision_variance";
 constexpr std::chrono::milliseconds kCameraReadRetryDelay{100};
+constexpr std::chrono::milliseconds kVisionVarianceUpdateInterval{500};
+constexpr std::chrono::seconds kPnpTimeout{5};
+constexpr std::size_t kPnpWindowSize = 5;
+constexpr double kPnpVarianceThreshold = 1e-5;
+constexpr double kPnpFailureZ = -100.0;
 }  // namespace
 
 namespace arm
@@ -61,12 +70,16 @@ ArmNode::ArmNode()
 {
   camera_index_ = declare_parameter<std::string>("camera_index", kDefaultCameraIndex);
   camera_device_ = declare_parameter<std::string>("camera_device", "");
-  // 这里的模型路径只是当前环境下的默认值，部署到其他机器时应优先通过参数覆写。
   const std::string name_model_path = declare_parameter<std::string>(
     "name_model_path", "/home/pc2/Desktop/arm/src/arm/best.onnx");
+  const std::string pnp_model_path = declare_parameter<std::string>(
+    "pnp_model_path", "/home/pc2/Desktop/arm/src/arm/best.onnx");
   const bool name_cuda = declare_parameter<bool>("name_run_with_cuda", false);
+  const bool pnp_cuda = declare_parameter<bool>("pnp_run_with_cuda", false);
   declare_parameter<bool>(kStartRecognitionParameter, false);
+  declare_parameter<bool>(kStartPnpParameter, false);
   declare_parameter<bool>(kCancelRecognitionParameter, false);
+  declare_parameter<double>(kVisionVarianceParameter, 0.0);
 
   openCamera();
   if (!camera_.isOpened()) {
@@ -74,10 +87,13 @@ ArmNode::ArmNode()
   }
 
   auto name_inference = std::make_shared<Inference>(name_model_path, cv::Size(640, 640), "", name_cuda);
+  auto pnp_inference = std::make_shared<Inference>(pnp_model_path, cv::Size(640, 640), "", pnp_cuda);
 
   box_grid_detector_ = std::make_unique<BoxGridDetector>(name_inference);
+  pnp_detector_ = std::make_unique<PnpDetector>(pnp_inference);
 
   box_grid_pub_ = create_publisher<std_msgs::msg::Int32MultiArray>("box_id_grid", kQueueSize);
+  pnp_pub_ = create_publisher<geometry_msgs::msg::Point>("pnp_move", kQueueSize);
   command_sub_ = create_subscription<std_msgs::msg::Int32>(
     "arm_command", kQueueSize, [this](const std_msgs::msg::Int32::SharedPtr msg) {
       onCommand(msg);
@@ -90,7 +106,7 @@ ArmNode::ArmNode()
 
   RCLCPP_INFO(
     get_logger(),
-    "arm_node 已启动，等待 arm_command 控制命令、start_recognition 参数触发或 cancel_recognition 参数取消");
+    "arm_node 已启动，等待 arm_command 控制命令、start_recognition/start_pnp 参数触发或 cancel_recognition 参数取消");
 }
 
 ArmNode::~ArmNode()
@@ -108,18 +124,19 @@ void ArmNode::onCommand(const std_msgs::msg::Int32::SharedPtr msg)
 {
   switch (msg->data) {
     case 0:
-      // 退出命令不进入识别线程，避免被正在执行的识别任务阻塞。
       RCLCPP_INFO(get_logger(), "收到退出命令");
       rclcpp::shutdown();
       return;
     case 1:
-      break;
+      requestRecognition(RecognitionTask::BoxGrid, "arm_command");
+      return;
+    case 2:
+      requestRecognition(RecognitionTask::Pnp, "arm_command");
+      return;
     default:
       RCLCPP_WARN(get_logger(), "未知命令: %d", msg->data);
       return;
   }
-
-  requestRecognition("arm_command");
 }
 
 rcl_interfaces::msg::SetParametersResult ArmNode::onParametersChanged(
@@ -127,12 +144,16 @@ rcl_interfaces::msg::SetParametersResult ArmNode::onParametersChanged(
 {
   rcl_interfaces::msg::SetParametersResult result;
   result.successful = true;
-  bool start_requested = false;
+
+  bool start_recognition_requested = false;
+  bool start_pnp_requested = false;
+  bool stop_pnp_requested = false;
   bool cancel_requested = false;
 
   for (const auto & parameter : parameters) {
     const std::string & parameter_name = parameter.get_name();
     if (parameter_name != kStartRecognitionParameter &&
+      parameter_name != kStartPnpParameter &&
       parameter_name != kCancelRecognitionParameter)
     {
       continue;
@@ -144,14 +165,17 @@ rcl_interfaces::msg::SetParametersResult ArmNode::onParametersChanged(
       return result;
     }
 
-    if (!parameter.as_bool()) {
-      continue;
-    }
-
+    const bool value = parameter.as_bool();
     if (parameter_name == kStartRecognitionParameter) {
-      start_requested = true;
+      start_recognition_requested = value;
+    } else if (parameter_name == kStartPnpParameter) {
+      if (value) {
+        start_pnp_requested = true;
+      } else {
+        stop_pnp_requested = true;
+      }
     } else if (parameter_name == kCancelRecognitionParameter) {
-      cancel_requested = true;
+      cancel_requested = value;
     }
   }
 
@@ -159,22 +183,43 @@ rcl_interfaces::msg::SetParametersResult ArmNode::onParametersChanged(
     cancelRecognition("cancel_recognition 参数");
   }
 
-  if (start_requested) {
-    requestRecognition("start_recognition 参数");
+  if (start_recognition_requested) {
+    requestRecognition(RecognitionTask::BoxGrid, "start_recognition 参数");
+  }
+
+  if (start_pnp_requested) {
+    requestRecognition(RecognitionTask::Pnp, "start_pnp 参数");
+  }
+
+  if (stop_pnp_requested) {
+    std::lock_guard<std::mutex> lock(recognition_state_mutex_);
+    if (active_task_ && *active_task_ == RecognitionTask::Pnp) {
+      recognition_keep_running_.store(false);
+      destroyRecognitionUi();
+      RCLCPP_INFO(get_logger(), "已请求停止当前箱子位置识别，来源: start_pnp=false");
+    }
   }
 
   return result;
 }
 
-bool ArmNode::requestRecognition(const char * source)
+bool ArmNode::requestRecognition(RecognitionTask task, const char * source)
 {
   std::lock_guard<std::mutex> lock(recognition_state_mutex_);
-  if (vision_task_busy_.exchange(true)) {
+  if (vision_task_busy_.load()) {
+    if (task == RecognitionTask::Pnp && active_task_ && *active_task_ == RecognitionTask::Pnp) {
+      recognition_keep_running_.store(true);
+      RCLCPP_INFO(get_logger(), "箱子位置识别继续运行，来源: %s", source);
+      return true;
+    }
+
     RCLCPP_WARN(get_logger(), "当前识别任务仍在执行，丢弃触发来源: %s", source);
     return false;
   }
 
+  pending_task_ = task;
   recognition_keep_running_.store(true);
+  vision_task_busy_.store(true);
   if (!command_signal_.post()) {
     recognition_keep_running_.store(false);
     vision_task_busy_.store(false);
@@ -214,27 +259,30 @@ void ArmNode::visionWorker()
       break;
     }
 
+    {
+      std::lock_guard<std::mutex> lock(recognition_state_mutex_);
+      active_task_ = pending_task_;
+    }
+
     handleCommand();
+
+    {
+      std::lock_guard<std::mutex> lock(recognition_state_mutex_);
+      active_task_.reset();
+    }
     vision_task_busy_.store(false);
-    try {
-      set_parameter(rclcpp::Parameter(kStartRecognitionParameter, false));
-    } catch (const std::exception & exception) {
-      RCLCPP_WARN(
-        get_logger(), "重置 start_recognition 参数失败: %s", exception.what());
-    }
-    try {
-      set_parameter(rclcpp::Parameter(kCancelRecognitionParameter, false));
-    } catch (const std::exception & exception) {
-      RCLCPP_WARN(
-        get_logger(), "重置 cancel_recognition 参数失败: %s", exception.what());
-    }
+    resetCancelRecognitionParameter();
   }
 }
 
 void ArmNode::handleCommand()
 {
   try {
-    runBoxGrid();
+    if (active_task_ && *active_task_ == RecognitionTask::Pnp) {
+      runPnp();
+    } else {
+      runBoxGrid();
+    }
   } catch (const std::exception & exception) {
     RCLCPP_ERROR(get_logger(), "执行视觉识别任务失败: %s", exception.what());
     cleanupRecognitionResources();
@@ -288,6 +336,7 @@ void ArmNode::releaseCamera()
 void ArmNode::destroyRecognitionUi()
 {
   BoxGridDetector::destroyPreviewWindows();
+  cv::destroyAllWindows();
 }
 
 void ArmNode::cleanupRecognitionResources()
@@ -345,7 +394,6 @@ void ArmNode::runBoxGrid()
   }
 
   RCLCPP_INFO(get_logger(), "已发布 box_id_grid");
-
   cleanupRecognitionResources();
 }
 
@@ -363,6 +411,154 @@ bool ArmNode::publishGridIfRecognitionActive(const std::array<int32_t, 8> & grid
   }
   box_grid_pub_->publish(message);
   return true;
+}
+
+void ArmNode::runPnp()
+{
+  RCLCPP_INFO(get_logger(), "开始识别箱子位置");
+  resetPnpWindow();
+  last_variance_update_ = std::chrono::steady_clock::now();
+
+  const auto start_time = std::chrono::steady_clock::now();
+  while (worker_running_.load()) {
+    if (std::chrono::steady_clock::now() - start_time >= kPnpTimeout) {
+      break;
+    }
+
+    cv::Mat frame;
+    if (!readCameraFrame(frame, "箱子位置")) {
+      break;
+    }
+
+    const auto result = pnp_detector_->detectOnce(frame);
+    if (!result) {
+      continue;
+    }
+
+    appendPnpSample(*result);
+    if (!hasFullPnpWindow()) {
+      continue;
+    }
+
+    const PnpWindowStats stats = computePnpWindowStats();
+    updateVisionVarianceParameter(stats.variance_sum);
+
+    if (stats.var_x <= kPnpVarianceThreshold && stats.var_y <= kPnpVarianceThreshold) {
+      publishPnpPoint(stats.mean_x, stats.mean_y, stats.mean_z);
+      RCLCPP_INFO(
+        get_logger(), "已发布稳定 pnp_move: x=%.4f y=%.4f z=%.4f",
+        stats.mean_x, stats.mean_y, stats.mean_z);
+      cleanupRecognitionResources();
+      return;
+    }
+  }
+
+  if (hasFullPnpWindow()) {
+    const PnpWindowStats stats = computePnpWindowStats();
+    updateVisionVarianceParameter(stats.variance_sum);
+    publishPnpPoint(stats.mean_x, stats.mean_y, stats.mean_z);
+    RCLCPP_INFO(
+      get_logger(), "箱子位置识别结束，已发布当前滑动稳定窗口结果: x=%.4f y=%.4f z=%.4f",
+      stats.mean_x, stats.mean_y, stats.mean_z);
+  } else {
+    publishPnpFailure();
+    RCLCPP_WARN(get_logger(), "箱子位置识别未形成可用滑动稳定窗口，已发布失败位置结果");
+  }
+
+  cleanupRecognitionResources();
+}
+
+void ArmNode::resetPnpWindow()
+{
+  pnp_window_.clear();
+  try {
+    set_parameter(rclcpp::Parameter(kVisionVarianceParameter, 0.0));
+  } catch (const std::exception & exception) {
+    RCLCPP_WARN(get_logger(), "重置 vision_variance 参数失败: %s", exception.what());
+  }
+}
+
+void ArmNode::appendPnpSample(const PnpResult & result)
+{
+  pnp_window_.push_back(result);
+  if (pnp_window_.size() > kPnpWindowSize) {
+    pnp_window_.pop_front();
+  }
+}
+
+bool ArmNode::hasFullPnpWindow() const
+{
+  return pnp_window_.size() == kPnpWindowSize;
+}
+
+ArmNode::PnpWindowStats ArmNode::computePnpWindowStats() const
+{
+  PnpWindowStats stats;
+  if (pnp_window_.empty()) {
+    return stats;
+  }
+
+  for (const auto & sample : pnp_window_) {
+    stats.mean_x += sample.x;
+    stats.mean_y += sample.y;
+    stats.mean_z += sample.z;
+  }
+
+  const double sample_count = static_cast<double>(pnp_window_.size());
+  stats.mean_x /= sample_count;
+  stats.mean_y /= sample_count;
+  stats.mean_z /= sample_count;
+
+  for (const auto & sample : pnp_window_) {
+    const double dx = sample.x - stats.mean_x;
+    const double dy = sample.y - stats.mean_y;
+    stats.var_x += dx * dx;
+    stats.var_y += dy * dy;
+  }
+
+  stats.var_x /= sample_count;
+  stats.var_y /= sample_count;
+  stats.variance_sum = stats.var_x + stats.var_y;
+  return stats;
+}
+
+bool ArmNode::publishPnpPoint(double x, double y, double z)
+{
+  geometry_msgs::msg::Point message;
+  message.x = x;
+  message.y = y;
+  message.z = z;
+  pnp_pub_->publish(message);
+  return true;
+}
+
+bool ArmNode::publishPnpFailure()
+{
+  return publishPnpPoint(0.0, 0.0, kPnpFailureZ);
+}
+
+void ArmNode::updateVisionVarianceParameter(double variance_sum)
+{
+  const auto now = std::chrono::steady_clock::now();
+  if (now - last_variance_update_ < kVisionVarianceUpdateInterval) {
+    return;
+  }
+
+  try {
+    set_parameter(rclcpp::Parameter(kVisionVarianceParameter, variance_sum));
+    last_variance_update_ = now;
+  } catch (const std::exception & exception) {
+    RCLCPP_WARN(get_logger(), "更新 vision_variance 参数失败: %s", exception.what());
+  }
+}
+
+void ArmNode::resetCancelRecognitionParameter()
+{
+  try {
+    set_parameter(rclcpp::Parameter(kCancelRecognitionParameter, false));
+  } catch (const std::exception & exception) {
+    RCLCPP_WARN(get_logger(), "重置 cancel_recognition 参数失败: %s", exception.what());
+  }
 }
 
 }  // namespace arm
