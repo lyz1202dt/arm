@@ -29,8 +29,7 @@ constexpr char kVisionVarianceParameter[] = "vision_variance";
 constexpr std::chrono::milliseconds kCameraReadRetryDelay{100};
 constexpr std::chrono::milliseconds kVisionVarianceUpdateInterval{500};
 constexpr std::size_t kPnpWindowSize = 5;
-constexpr double kPnpVarianceThreshold = 1e-5;
-constexpr double kPnpFailureZ = -100.0;
+constexpr double kVarianceNormalizationEpsilon = 1e-6;
 }  // namespace
 
 namespace arm
@@ -441,8 +440,7 @@ void ArmNode::runPnp()
     updateVisionVarianceParameter(stats.variance_sum);
   }
 
-  const bool stop_requested = pnp_stop_requested_.load();
-  if (stop_requested) {
+  if (pnp_stop_requested_.load()) {
     if (hasFullPnpWindow()) {
       const PnpWindowStats stats = computePnpWindowStats();
       updateVisionVarianceParameter(stats.variance_sum);
@@ -456,11 +454,7 @@ void ArmNode::runPnp()
   }
 
   cleanupRecognitionResources();
-
-  if (stop_requested) {
-    RCLCPP_INFO(get_logger(), "箱子位置识别已结束，arm_node 即将退出");
-    rclcpp::shutdown();
-  }
+  RCLCPP_INFO(get_logger(), "箱子位置识别已结束，继续等待下一次外部参数触发");
 }
 
 void ArmNode::resetPnpWindow()
@@ -513,7 +507,9 @@ ArmNode::PnpWindowStats ArmNode::computePnpWindowStats() const
 
   stats.var_x /= sample_count;
   stats.var_y /= sample_count;
-  stats.variance_sum = stats.var_x + stats.var_y;
+  const double normalized_var_x = stats.var_x / (std::abs(stats.mean_x) + kVarianceNormalizationEpsilon);
+  const double normalized_var_y = stats.var_y / (std::abs(stats.mean_y) + kVarianceNormalizationEpsilon);
+  stats.variance_sum = normalized_var_x + normalized_var_y;
   return stats;
 }
 
@@ -525,11 +521,6 @@ bool ArmNode::publishPnpPoint(double x, double y, double z)
   message.z = z;
   pnp_pub_->publish(message);
   return true;
-}
-
-bool ArmNode::publishPnpFailure()
-{
-  return publishPnpPoint(0.0, 0.0, kPnpFailureZ);
 }
 
 void ArmNode::updateVisionVarianceParameter(double variance_sum)

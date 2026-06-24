@@ -92,7 +92,6 @@ private:
   bool hasFullPnpWindow() const;
   PnpWindowStats computePnpWindowStats() const;
   bool publishPnpPoint(double x, double y, double z);
-  bool publishPnpFailure();
   void updateVisionVarianceParameter(double variance_sum);
   void resetCancelRecognitionParameter();
 
