@@ -28,7 +28,6 @@ constexpr char kCancelRecognitionParameter[] = "cancel_recognition";
 constexpr char kVisionVarianceParameter[] = "vision_variance";
 constexpr std::chrono::milliseconds kCameraReadRetryDelay{100};
 constexpr std::chrono::milliseconds kVisionVarianceUpdateInterval{500};
-constexpr std::chrono::seconds kPnpTimeout{5};
 constexpr std::size_t kPnpWindowSize = 5;
 constexpr double kPnpVarianceThreshold = 1e-5;
 constexpr double kPnpFailureZ = -100.0;
@@ -419,12 +418,7 @@ void ArmNode::runPnp()
   resetPnpWindow();
   last_variance_update_ = std::chrono::steady_clock::now();
 
-  const auto start_time = std::chrono::steady_clock::now();
   while (worker_running_.load()) {
-    if (std::chrono::steady_clock::now() - start_time >= kPnpTimeout) {
-      break;
-    }
-
     cv::Mat frame;
     if (!readCameraFrame(frame, "箱子位置")) {
       break;
