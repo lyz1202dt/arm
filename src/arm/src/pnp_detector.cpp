@@ -49,8 +49,7 @@ std::optional<PnpResult> PnpDetector::detectOnce(const cv::Mat & frame)
   }
 
   const cv::Mat gamma_frame = applyGammaCorrection(frame);
-  cv::imshow("...", gamma_frame);
-  cv::waitKey(1);
+  cv::Mat preview = gamma_frame.clone();
 
   cv::Mat gray;
   cv::cvtColor(gamma_frame, gray, cv::COLOR_BGR2GRAY);
@@ -80,6 +79,8 @@ std::optional<PnpResult> PnpDetector::detectOnce(const cv::Mat & frame)
   // 只在目标检测框覆盖的区域内寻找矩形，减少背景干扰。
   checkRect(edges, mask, best_rect_points);
   if (best_rect_points.size() != 4) {
+    cv::imshow("...", preview);
+    cv::waitKey(1);
     return std::nullopt;
   }
 
@@ -92,8 +93,19 @@ std::optional<PnpResult> PnpDetector::detectOnce(const cv::Mat & frame)
     cv::SOLVEPNP_ITERATIVE);
 
   if (!success || tvec.empty()) {
+    cv::imshow("...", preview);
+    cv::waitKey(1);
     return std::nullopt;
   }
+
+  for (int i = 0; i < 4; ++i) {
+    const cv::Point start = best_rect_points[i];
+    const cv::Point end = best_rect_points[(i + 1) % 4];
+    cv::line(preview, start, end, cv::Scalar(0, 255, 0), 2);
+    cv::circle(preview, start, 4, cv::Scalar(0, 0, 255), -1);
+  }
+  cv::imshow("...", preview);
+  cv::waitKey(1);
 
   return PnpResult{tvec.at<double>(0, 0), tvec.at<double>(1, 0), tvec.at<double>(2, 0)};
 }

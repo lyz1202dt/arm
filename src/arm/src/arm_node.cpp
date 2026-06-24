@@ -428,6 +428,8 @@ void ArmNode::runPnp()
 
     const auto result = pnp_detector_->detectOnce(frame);
     if (!result) {
+      pnp_window_.clear();
+      updateVisionVarianceParameter(10.0);
       continue;
     }
 
@@ -530,8 +532,11 @@ void ArmNode::updateVisionVarianceParameter(double variance_sum)
     return;
   }
 
+  const bool has_valid_window = hasFullPnpWindow();
+  const double value_to_publish = has_valid_window ? variance_sum : 10.0;
+
   try {
-    set_parameter(rclcpp::Parameter(kVisionVarianceParameter, variance_sum));
+    set_parameter(rclcpp::Parameter(kVisionVarianceParameter, value_to_publish));
     last_variance_update_ = now;
   } catch (const std::exception & exception) {
     RCLCPP_WARN(get_logger(), "更新 vision_variance 参数失败: %s", exception.what());
