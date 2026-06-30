@@ -15,6 +15,7 @@
 #include <vector>
 
 #include <arm/box_grid_detector.hpp>
+#include <arm/color_pnp_detector.hpp>
 #include <arm/pnp_detector.hpp>
 #include <geometry_msgs/msg/point.hpp>
 #include <opencv2/core/mat.hpp>
@@ -56,6 +57,7 @@ private:
   {
     BoxGrid,
     Pnp,
+    ColorPnp,
   };
 
   struct PnpWindowStats
@@ -87,6 +89,7 @@ private:
   bool publishGridIfRecognitionActive(const std::array<int32_t, 8> & grid);
 
   void runPnp();
+  bool publishPnpBoxIndex();
   void resetPnpWindow();
   void appendPnpSample(const PnpResult & result);
   bool hasFullPnpWindow() const;
@@ -95,14 +98,20 @@ private:
   void updateVisionVarianceParameter(double variance_sum);
   void resetCancelRecognitionParameter();
 
+  void runColorPnp();
+  bool publishColorPnpPoint(double x, double y, double z);
+
   std::string camera_index_{0};
   std::string camera_device_;
   cv::VideoCapture camera_;
   std::unique_ptr<BoxGridDetector> box_grid_detector_;
   std::unique_ptr<PnpDetector> pnp_detector_;
+  std::unique_ptr<ColorPnpDetector> color_pnp_detector_;
 
   rclcpp::Publisher<std_msgs::msg::Int32MultiArray>::SharedPtr box_grid_pub_;
+  rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr pnp_box_id_pub_;
   rclcpp::Publisher<geometry_msgs::msg::Point>::SharedPtr pnp_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::Point>::SharedPtr color_pnp_pub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr command_sub_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameter_callback_handle_;
 
@@ -110,7 +119,6 @@ private:
   std::atomic_bool worker_running_{true};
   std::atomic_bool recognition_keep_running_{false};
   std::atomic_bool vision_task_busy_{false};
-  std::atomic_bool pnp_stop_requested_{false};
   std::mutex recognition_state_mutex_;
   std::thread vision_worker_;
   RecognitionTask pending_task_{RecognitionTask::BoxGrid};

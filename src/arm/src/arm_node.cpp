@@ -30,6 +30,10 @@ constexpr std::chrono::milliseconds kCameraReadRetryDelay{100};
 constexpr std::chrono::milliseconds kVisionVarianceUpdateInterval{500};
 constexpr std::size_t kPnpWindowSize = 5;
 constexpr double kVarianceNormalizationEpsilon = 1e-6;
+// 箱子位置 PnP 连续若干帧归一化方差和低于该阈值即视为稳定，自动发布并结束。
+constexpr double kPnpStableVarianceThreshold = 0.01;
+// 色块正方形 PnP 连续若干帧归一化方差和低于该阈值即视为稳定，自动发布并结束。
+constexpr double kColorPnpStableVarianceThreshold = 0.01;
 }  // namespace
 
 namespace arm
@@ -89,9 +93,12 @@ ArmNode::ArmNode()
 
   box_grid_detector_ = std::make_unique<BoxGridDetector>(name_inference);
   pnp_detector_ = std::make_unique<PnpDetector>(pnp_inference);
+  color_pnp_detector_ = std::make_unique<ColorPnpDetector>();
 
   box_grid_pub_ = create_publisher<std_msgs::msg::Int32MultiArray>("box_id_grid", kQueueSize);
+  pnp_box_id_pub_ = create_publisher<std_msgs::msg::Int32>("pnp_box_index", kQueueSize);
   pnp_pub_ = create_publisher<geometry_msgs::msg::Point>("pnp_move", kQueueSize);
+  color_pnp_pub_ = create_publisher<geometry_msgs::msg::Point>("color_pnp_move", kQueueSize);
   command_sub_ = create_subscription<std_msgs::msg::Int32>(
     "arm_command", kQueueSize, [this](const std_msgs::msg::Int32::SharedPtr msg) {
       onCommand(msg);
@@ -130,6 +137,9 @@ void ArmNode::onCommand(const std_msgs::msg::Int32::SharedPtr msg)
       return;
     case 2:
       requestRecognition(RecognitionTask::Pnp, "arm_command");
+      return;
+    case 5:
+      requestRecognition(RecognitionTask::ColorPnp, "arm_command");
       return;
     default:
       RCLCPP_WARN(get_logger(), "未知命令: %d", msg->data);
@@ -186,14 +196,12 @@ rcl_interfaces::msg::SetParametersResult ArmNode::onParametersChanged(
   }
 
   if (start_pnp_requested) {
-    pnp_stop_requested_.store(false);
     requestRecognition(RecognitionTask::Pnp, "start_pnp 参数");
   }
 
   if (stop_pnp_requested) {
     std::lock_guard<std::mutex> lock(recognition_state_mutex_);
     if (active_task_ && *active_task_ == RecognitionTask::Pnp) {
-      pnp_stop_requested_.store(true);
       recognition_keep_running_.store(false);
       destroyRecognitionUi();
       RCLCPP_INFO(get_logger(), "已请求停止当前箱子位置识别，来源: start_pnp=false");
@@ -280,6 +288,8 @@ void ArmNode::handleCommand()
   try {
     if (active_task_ && *active_task_ == RecognitionTask::Pnp) {
       runPnp();
+    } else if (active_task_ && *active_task_ == RecognitionTask::ColorPnp) {
+      runColorPnp();
     } else {
       runBoxGrid();
     }
@@ -417,10 +427,17 @@ void ArmNode::runPnp()
 {
   RCLCPP_INFO(get_logger(), "开始识别箱子位置");
   resetPnpWindow();
-  pnp_stop_requested_.store(false);
+
+  // 进入 PnP 位姿估计前，先发布一次 YOLO 识别到的箱子索引。
+  if (!publishPnpBoxIndex()) {
+    cleanupRecognitionResources();
+    return;
+  }
+
   last_variance_update_ = std::chrono::steady_clock::now();
 
-  while (worker_running_.load()) {
+  // 持续采样，待最近若干帧中心点坐标足够稳定后发布均值并结束。
+  while (worker_running_.load() && recognition_keep_running_.load()) {
     cv::Mat frame;
     if (!readCameraFrame(frame, "箱子位置")) {
       break;
@@ -440,23 +457,94 @@ void ArmNode::runPnp()
 
     const PnpWindowStats stats = computePnpWindowStats();
     updateVisionVarianceParameter(stats.variance_sum);
-  }
 
-  if (pnp_stop_requested_.load()) {
-    if (hasFullPnpWindow()) {
-      const PnpWindowStats stats = computePnpWindowStats();
-      updateVisionVarianceParameter(stats.variance_sum);
+    if (stats.variance_sum <= kPnpStableVarianceThreshold) {
       publishPnpPoint(stats.mean_x, stats.mean_y, stats.mean_z);
       RCLCPP_INFO(
-        get_logger(), "start_pnp=false，已发布最后五帧均值: x=%.4f y=%.4f z=%.4f",
+        get_logger(), "箱子位置识别已稳定，发布中心点: x=%.4f y=%.4f z=%.4f",
         stats.mean_x, stats.mean_y, stats.mean_z);
-    } else {
-      RCLCPP_WARN(get_logger(), "start_pnp=false，但当前不足五帧有效结果，未发布 pnp_move");
+      break;
     }
   }
 
   cleanupRecognitionResources();
   RCLCPP_INFO(get_logger(), "箱子位置识别已结束，继续等待下一次外部参数触发");
+}
+
+void ArmNode::runColorPnp()
+{
+  RCLCPP_INFO(get_logger(), "开始识别色块正方形位置");
+  resetPnpWindow();
+  last_variance_update_ = std::chrono::steady_clock::now();
+
+  // 持续采样，待最近若干帧中心点坐标足够稳定后发布均值并结束。
+  while (worker_running_.load() && recognition_keep_running_.load()) {
+    cv::Mat frame;
+    if (!readCameraFrame(frame, "色块正方形位置")) {
+      break;
+    }
+
+    const auto result = color_pnp_detector_->detectOnce(frame);
+    if (!result) {
+      pnp_window_.clear();
+      updateVisionVarianceParameter(10.0);
+      continue;
+    }
+
+    appendPnpSample(*result);
+    if (!hasFullPnpWindow()) {
+      continue;
+    }
+
+    const PnpWindowStats stats = computePnpWindowStats();
+    updateVisionVarianceParameter(stats.variance_sum);
+
+    if (stats.variance_sum <= kColorPnpStableVarianceThreshold) {
+      publishColorPnpPoint(stats.mean_x, stats.mean_y, stats.mean_z);
+      RCLCPP_INFO(
+        get_logger(), "色块正方形识别已稳定，发布中心点: x=%.4f y=%.4f z=%.4f",
+        stats.mean_x, stats.mean_y, stats.mean_z);
+      break;
+    }
+  }
+
+  cleanupRecognitionResources();
+  RCLCPP_INFO(get_logger(), "色块正方形识别已结束，继续等待下一次外部命令触发");
+}
+
+bool ArmNode::publishColorPnpPoint(double x, double y, double z)
+{
+  geometry_msgs::msg::Point message;
+  message.x = x;
+  message.y = y;
+  message.z = z;
+  color_pnp_pub_->publish(message);
+  return true;
+}
+
+bool ArmNode::publishPnpBoxIndex()
+{
+  while (worker_running_.load() && recognition_keep_running_.load()) {
+    cv::Mat frame;
+    if (!readCameraFrame(frame, "箱子索引")) {
+      return false;
+    }
+
+    const auto box_index = pnp_detector_->detectBoxIndex(frame);
+    if (!box_index) {
+      // 当前帧未识别到箱子，继续读取下一帧重试。
+      continue;
+    }
+
+    std_msgs::msg::Int32 message;
+    message.data = *box_index;
+    pnp_box_id_pub_->publish(message);
+    RCLCPP_INFO(get_logger(), "已发布 pnp_box_index: %d", *box_index);
+    return true;
+  }
+
+  RCLCPP_INFO(get_logger(), "识别任务已停止，放弃发布 pnp_box_index");
+  return false;
 }
 
 void ArmNode::resetPnpWindow()

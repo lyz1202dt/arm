@@ -110,6 +110,22 @@ std::optional<PnpResult> PnpDetector::detectOnce(const cv::Mat & frame)
   return PnpResult{tvec.at<double>(0, 0), tvec.at<double>(1, 0), tvec.at<double>(2, 0)};
 }
 
+std::optional<int> PnpDetector::detectBoxIndex(const cv::Mat & frame)
+{
+  if (frame.empty()) {
+    return std::nullopt;
+  }
+
+  const cv::Mat gamma_frame = applyGammaCorrection(frame);
+  const auto detections = inference_->run(gamma_frame);
+  if (detections.empty()) {
+    return std::nullopt;
+  }
+
+  // detections 已按置信度降序排列，取首个即为置信度最高的箱子。
+  return detections.front().class_id;
+}
+
 void PnpDetector::initPnpParameters()
 {
   camera_matrix_ = (cv::Mat_<double>(3, 3) <<
@@ -124,10 +140,10 @@ void PnpDetector::initPnpParameters()
   constexpr float height = 0.25F;
   object_points_.clear();
   // 目标物被建模为位于 Z=0 平面上的矩形，四点顺序需与图像点顺序一致。
-  object_points_.push_back(cv::Point3f(-width / 2.0F, -height / 2.0F, 0));
-  object_points_.push_back(cv::Point3f(width / 2.0F, -height / 2.0F, 0));
-  object_points_.push_back(cv::Point3f(width / 2.0F, height / 2.0F, 0));
-  object_points_.push_back(cv::Point3f(-width / 2.0F, height / 2.0F, 0));
+  object_points_.push_back(cv::Point3f(-width / 2.0F, -height / 2.0F, 0.125));
+  object_points_.push_back(cv::Point3f(width / 2.0F, -height / 2.0F, 0.125));
+  object_points_.push_back(cv::Point3f(width / 2.0F, height / 2.0F, 0.125));
+  object_points_.push_back(cv::Point3f(-width / 2.0F, height / 2.0F, 0.125));
 }
 
 std::vector<cv::Point2f> PnpDetector::checkRect(

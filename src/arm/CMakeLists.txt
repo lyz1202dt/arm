@@ -28,6 +28,7 @@ target_compile_features(arm_inference PUBLIC cxx_std_17)
 add_library(arm_vision
   src/box_grid_detector.cpp
   src/pnp_detector.cpp
+  src/color_pnp_detector.cpp
 )
 target_include_directories(arm_vision PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
