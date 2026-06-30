@@ -20,7 +20,7 @@
 namespace
 {
 // ROS2 发布/订阅队列深度，取较大值以容忍下游短暂处理不及时。
-constexpr int kQueueSize = 50000;
+constexpr int kQueueSize = 10;
 // 默认 USB 摄像头设备节点，按 by-id 路径指定避免索引漂移。
 const char * kDefaultCameraIndex = "/dev/v4l/by-id/usb-HD_Camera_Manufacturer_USB_2.0_Camera-video-index0";
 // 单次读帧失败后的最大重试次数，超过则放弃本次识别命令。
@@ -120,7 +120,7 @@ ArmNode::ArmNode()
     -0.015437, -0.017894, -0.000542, 0.001233, 0.0});
   declare_parameter<std::vector<double>>(kPnpPlaneNormalParameter, {0.0, 0.0, 1.0});
   declare_parameter<double>(kPnpPlaneYawParameter, 0.0);
-  declare_parameter<double>(kPnpPlaneDistanceParameter, 1.0);
+  declare_parameter<double>(kPnpPlaneDistanceParameter, 0.23);
   declare_parameter<bool>(kPnpEnableRectificationParameter, false);
 
   openCamera();
