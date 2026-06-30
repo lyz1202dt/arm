@@ -19,16 +19,27 @@
 
 namespace
 {
+// ROS2 发布/订阅队列深度，取较大值以容忍下游短暂处理不及时。
 constexpr int kQueueSize = 50000;
+// 默认 USB 摄像头设备节点，按 by-id 路径指定避免索引漂移。
 const char * kDefaultCameraIndex = "/dev/v4l/by-id/usb-HD_Camera_Manufacturer_USB_2.0_Camera-video-index0";
+// 单次读帧失败后的最大重试次数，超过则放弃本次识别命令。
 constexpr int kCameraReadMaxRetries = 10;
+// 触发箱子矩阵识别的布尔参数名。
 constexpr char kStartRecognitionParameter[] = "start_recognition";
+// 触发/停止箱子位置 PnP 的布尔参数名。
 constexpr char kStartPnpParameter[] = "start_pnp";
+// 取消当前识别任务的布尔参数名。
 constexpr char kCancelRecognitionParameter[] = "cancel_recognition";
+// 对外暴露当前识别稳定度（方差和）的浮点参数名。
 constexpr char kVisionVarianceParameter[] = "vision_variance";
+// 两次读帧重试之间的间隔。
 constexpr std::chrono::milliseconds kCameraReadRetryDelay{100};
+// vision_variance 参数的最小更新间隔，避免过于频繁地写参数。
 constexpr std::chrono::milliseconds kVisionVarianceUpdateInterval{500};
+// PnP 稳定判定所用的滑动窗口帧数。
 constexpr std::size_t kPnpWindowSize = 5;
+// 归一化方差时分母附加的极小值，防止均值接近 0 时除零。
 constexpr double kVarianceNormalizationEpsilon = 1e-6;
 // 箱子位置 PnP 连续若干帧归一化方差和低于该阈值即视为稳定，自动发布并结束。
 constexpr double kPnpStableVarianceThreshold = 0.01;
@@ -58,6 +69,7 @@ bool CommandSemaphore::post() noexcept
 
 bool CommandSemaphore::wait() noexcept
 {
+  // sem_wait 可能被信号中断（EINTR），此时需重新等待而非视为失败。
   while (sem_wait(&semaphore_) != 0) {
     if (errno == EINTR) {
       continue;
@@ -127,6 +139,7 @@ ArmNode::~ArmNode()
 
 void ArmNode::onCommand(const std_msgs::msg::Int32::SharedPtr msg)
 {
+  // arm_command 整数命令映射：0 退出，1 箱子矩阵，2 箱子位置 PnP，5 色块正方形 PnP。
   switch (msg->data) {
     case 0:
       RCLCPP_INFO(get_logger(), "收到退出命令");
@@ -158,6 +171,7 @@ rcl_interfaces::msg::SetParametersResult ArmNode::onParametersChanged(
   bool stop_pnp_requested = false;
   bool cancel_requested = false;
 
+  // 先汇总本批次参数变更的意图，再统一处理，避免同一回调内多次相互覆盖。
   for (const auto & parameter : parameters) {
     const std::string & parameter_name = parameter.get_name();
     if (parameter_name != kStartRecognitionParameter &&
@@ -177,6 +191,7 @@ rcl_interfaces::msg::SetParametersResult ArmNode::onParametersChanged(
     if (parameter_name == kStartRecognitionParameter) {
       start_recognition_requested = value;
     } else if (parameter_name == kStartPnpParameter) {
+      // start_pnp 置真为触发，置假为停止当前 PnP 识别。
       if (value) {
         start_pnp_requested = true;
       } else {
@@ -201,6 +216,7 @@ rcl_interfaces::msg::SetParametersResult ArmNode::onParametersChanged(
 
   if (stop_pnp_requested) {
     std::lock_guard<std::mutex> lock(recognition_state_mutex_);
+    // 仅当当前确实在执行 PnP 任务时才响应停止，避免误停其他任务。
     if (active_task_ && *active_task_ == RecognitionTask::Pnp) {
       recognition_keep_running_.store(false);
       destroyRecognitionUi();
@@ -215,6 +231,7 @@ bool ArmNode::requestRecognition(RecognitionTask task, const char * source)
 {
   std::lock_guard<std::mutex> lock(recognition_state_mutex_);
   if (vision_task_busy_.load()) {
+    // PnP 任务正在运行时再次触发 PnP，视为“保持运行”而非重复启动。
     if (task == RecognitionTask::Pnp && active_task_ && *active_task_ == RecognitionTask::Pnp) {
       recognition_keep_running_.store(true);
       RCLCPP_INFO(get_logger(), "箱子位置识别继续运行，来源: %s", source);
@@ -225,6 +242,7 @@ bool ArmNode::requestRecognition(RecognitionTask task, const char * source)
     return false;
   }
 
+  // 记录待执行任务并通过信号量唤醒后台 visionWorker 线程。
   pending_task_ = task;
   recognition_keep_running_.store(true);
   vision_task_busy_.store(true);
@@ -257,12 +275,14 @@ bool ArmNode::cancelRecognition(const char * source)
 
 void ArmNode::visionWorker()
 {
+  // 后台识别线程：阻塞等待信号量唤醒，逐个串行执行被触发的识别任务。
   while (worker_running_.load()) {
     if (!command_signal_.wait()) {
       RCLCPP_ERROR(get_logger(), "等待识别任务信号量失败");
       continue;
     }
 
+    // 析构阶段会 post 信号量并置位退出标志，这里需再次检查以便及时收尾。
     if (!worker_running_.load()) {
       break;
     }
@@ -274,6 +294,7 @@ void ArmNode::visionWorker()
 
     handleCommand();
 
+    // 任务结束后清空活动任务标记并复位忙状态，等待下一次触发。
     {
       std::lock_guard<std::mutex> lock(recognition_state_mutex_);
       active_task_.reset();
@@ -285,6 +306,7 @@ void ArmNode::visionWorker()
 
 void ArmNode::handleCommand()
 {
+  // 根据当前活动任务类型分派到对应的识别流程，任意异常都就地清理资源。
   try {
     if (active_task_ && *active_task_ == RecognitionTask::Pnp) {
       runPnp();
@@ -301,6 +323,7 @@ void ArmNode::handleCommand()
 
 std::string ArmNode::cameraSourceLabel() const
 {
+  // 优先使用显式设备路径，否则回退到 by-id 索引，仅用于日志展示。
   if (!camera_device_.empty()) {
     return camera_device_;
   }
@@ -313,6 +336,7 @@ bool ArmNode::openCamera()
     return true;
   }
 
+  // 优先以 V4L2 后端打开，可正确设置缓冲区等参数。
   if (!camera_device_.empty()) {
     camera_.open(camera_device_, cv::CAP_V4L2);
   } else {
@@ -320,10 +344,12 @@ bool ArmNode::openCamera()
   }
 
   if (camera_.isOpened()) {
+    // 缓冲区设为 1，确保每次读到的是最新帧而非积压的旧帧。
     camera_.set(cv::CAP_PROP_BUFFERSIZE, 1);
     return true;
   }
 
+  // V4L2 打开失败时退回默认后端再试一次。
   if (!camera_device_.empty()) {
     camera_.open(camera_device_);
   } else {
@@ -357,6 +383,7 @@ void ArmNode::cleanupRecognitionResources()
 
 bool ArmNode::readCameraFrame(cv::Mat & frame, const char * task_name)
 {
+  // 在最大重试次数内尝试读取一帧有效画面，期间若任务被取消则立即返回。
   for (int attempt = 1; attempt <= kCameraReadMaxRetries; ++attempt) {
     if (!worker_running_.load() || !recognition_keep_running_.load()) {
       RCLCPP_INFO(get_logger(), "%s 任务已取消，停止读取摄像头画面", task_name);
@@ -368,6 +395,7 @@ bool ArmNode::readCameraFrame(cv::Mat & frame, const char * task_name)
       return true;
     }
 
+    // 读取失败可能是设备短暂掉线，释放后重开再试。
     RCLCPP_WARN(
       get_logger(), "%s 读取摄像头画面失败，正在重新打开摄像头后重试 %d/%d，索引: %s",
       task_name, attempt, kCameraReadMaxRetries, cameraSourceLabel().c_str());
@@ -384,12 +412,14 @@ bool ArmNode::readCameraFrame(cv::Mat & frame, const char * task_name)
 void ArmNode::runBoxGrid()
 {
   RCLCPP_INFO(get_logger(), "开始识别箱子矩阵");
+  // 先确认能取到画面，避免在设备异常时空跑稳定判定。
   cv::Mat frame;
   if (!readCameraFrame(frame, "箱子矩阵")) {
     cleanupRecognitionResources();
     return;
   }
 
+  // 由检测器内部多帧投票得到稳定的 8 位编号序列。
   const auto grid = box_grid_detector_->detectStableGrid(camera_, recognition_keep_running_);
   if (!grid) {
     RCLCPP_INFO(get_logger(), "识别任务已停止");
@@ -410,6 +440,7 @@ void ArmNode::runBoxGrid()
 bool ArmNode::publishGridIfRecognitionActive(const std::array<int32_t, 8> & grid)
 {
   std::lock_guard<std::mutex> lock(recognition_state_mutex_);
+  // 投票过程中任务可能已被取消，发布前再次确认仍处于激活状态。
   if (!worker_running_.load() || !recognition_keep_running_.load()) {
     return false;
   }
@@ -445,6 +476,7 @@ void ArmNode::runPnp()
 
     const auto result = pnp_detector_->detectOnce(frame);
     if (!result) {
+      // 本帧未解算出位姿，清空窗口重新累积，并把方差置高表示当前不稳定。
       pnp_window_.clear();
       updateVisionVarianceParameter(10.0);
       continue;
@@ -458,6 +490,7 @@ void ArmNode::runPnp()
     const PnpWindowStats stats = computePnpWindowStats();
     updateVisionVarianceParameter(stats.variance_sum);
 
+    // 窗口内坐标足够稳定，发布一次中心点均值后结束本次任务。
     if (stats.variance_sum <= kPnpStableVarianceThreshold) {
       publishPnpPoint(stats.mean_x, stats.mean_y, stats.mean_z);
       RCLCPP_INFO(
@@ -486,6 +519,7 @@ void ArmNode::runColorPnp()
 
     const auto result = color_pnp_detector_->detectOnce(frame);
     if (!result) {
+      // 本帧未提取到完整四色块，清空窗口重新累积并标记为不稳定。
       pnp_window_.clear();
       updateVisionVarianceParameter(10.0);
       continue;
@@ -499,6 +533,7 @@ void ArmNode::runColorPnp()
     const PnpWindowStats stats = computePnpWindowStats();
     updateVisionVarianceParameter(stats.variance_sum);
 
+    // 窗口内坐标足够稳定，发布一次中心点均值后结束本次任务。
     if (stats.variance_sum <= kColorPnpStableVarianceThreshold) {
       publishColorPnpPoint(stats.mean_x, stats.mean_y, stats.mean_z);
       RCLCPP_INFO(
@@ -559,6 +594,7 @@ void ArmNode::resetPnpWindow()
 
 void ArmNode::appendPnpSample(const PnpResult & result)
 {
+  // 维护固定长度的滑动窗口：新样本入队，超出窗口大小时弹出最旧样本。
   pnp_window_.push_back(result);
   if (pnp_window_.size() > kPnpWindowSize) {
     pnp_window_.pop_front();
@@ -577,6 +613,7 @@ ArmNode::PnpWindowStats ArmNode::computePnpWindowStats() const
     return stats;
   }
 
+  // 第一遍累加求三轴均值。
   for (const auto & sample : pnp_window_) {
     stats.mean_x += sample.x;
     stats.mean_y += sample.y;
@@ -588,6 +625,7 @@ ArmNode::PnpWindowStats ArmNode::computePnpWindowStats() const
   stats.mean_y /= sample_count;
   stats.mean_z /= sample_count;
 
+  // 第二遍累加各轴离差平方，得到方差。
   for (const auto & sample : pnp_window_) {
     const double dx = sample.x - stats.mean_x;
     const double dy = sample.y - stats.mean_y;
@@ -620,11 +658,13 @@ bool ArmNode::publishPnpPoint(double x, double y, double z)
 
 void ArmNode::updateVisionVarianceParameter(double variance_sum)
 {
+  // 限流：距上次更新不足设定间隔则跳过，避免频繁写参数。
   const auto now = std::chrono::steady_clock::now();
   if (now - last_variance_update_ < kVisionVarianceUpdateInterval) {
     return;
   }
 
+  // 窗口未满时尚无可信方差，统一上报一个较大值表示当前不稳定。
   const bool has_valid_window = hasFullPnpWindow();
   const double value_to_publish = has_valid_window ? variance_sum : 10.0;
 
@@ -638,6 +678,7 @@ void ArmNode::updateVisionVarianceParameter(double variance_sum)
 
 void ArmNode::resetCancelRecognitionParameter()
 {
+  // 每次任务结束后把取消参数复位为 false，便于下一轮重新触发取消。
   try {
     set_parameter(rclcpp::Parameter(kCancelRecognitionParameter, false));
   } catch (const std::exception & exception) {

@@ -66,6 +66,7 @@ std::vector<Detection> Inference::run(const cv::Mat & frame)
   }
 
   cv::Mat blob;
+  // 归一化到 [0,1]、缩放到模型输入尺寸并交换 R/B 通道，得到网络输入张量。
   cv::dnn::blobFromImage(model_input, blob, 1.0 / 255.0, model_shape_, cv::Scalar(), true, false);
   net_.setInput(blob);
 
@@ -90,6 +91,7 @@ std::vector<Detection> Inference::run(const cv::Mat & frame)
   }
 
   float * data = reinterpret_cast<float *>(output.data);
+  // 网络输入经过补边缩放，需用缩放因子把框坐标还原回原图尺度。
   const float x_factor = static_cast<float>(model_input.cols) / model_shape_.width;
   const float y_factor = static_cast<float>(model_input.rows) / model_shape_.height;
 
@@ -106,6 +108,7 @@ std::vector<Detection> Inference::run(const cv::Mat & frame)
 
     // 每一行前 4 个值是框信息，后面才是各类别分数；这里取最大类别分数作为该候选的类别置信度。
     if (max_class_score > model_score_threshold_) {
+      // 模型输出的是中心点坐标加宽高，转换为左上角坐标的矩形并映射回原图。
       const float x = data[0];
       const float y = data[1];
       const float w = data[2];
@@ -117,6 +120,7 @@ std::vector<Detection> Inference::run(const cv::Mat & frame)
       const int height = static_cast<int>(h * y_factor);
 
       cv::Rect box(left, top, width, height);
+      // 与图像边界求交，裁掉越界部分，丢弃无效空框。
       box &= cv::Rect(0, 0, frame.cols, frame.rows);
       if (box.width > 0 && box.height > 0) {
         confidences.push_back(static_cast<float>(max_class_score));
@@ -125,6 +129,7 @@ std::vector<Detection> Inference::run(const cv::Mat & frame)
       }
     }
 
+    // 步进到下一候选行。
     data += dimensions;
   }
 
@@ -197,6 +202,7 @@ void Inference::loadOnnxNetwork()
 
 cv::Mat Inference::formatToSquare(const cv::Mat & source)
 {
+  // 取长边作为边长生成黑底方图，把原图贴在左上角，保持纵横比不被拉伸。
   const int col = source.cols;
   const int row = source.rows;
   const int max_dim = std::max(col, row);
