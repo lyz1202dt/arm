@@ -82,6 +82,9 @@ std::optional<PnpResult> PnpDetector::detectOnce(const cv::Mat & frame)
     return std::nullopt;
   }
 
+  cv::imshow("pnp_rectified", processed_frame);
+  cv::waitKey(1);
+
   const cv::Mat gamma_frame = applyGammaCorrection(processed_frame);
   cv::Mat preview = gamma_frame.clone();
 

@@ -118,7 +118,7 @@ ArmNode::ArmNode()
   declare_parameter<double>(kPnpCyParameter, 235.624095);
   declare_parameter<std::vector<double>>(kPnpDistCoeffsParameter, {
     -0.015437, -0.017894, -0.000542, 0.001233, 0.0});
-  declare_parameter<std::vector<double>>(kPnpPlaneNormalParameter, {0.0, 0.0, 1.0});
+  declare_parameter<std::vector<double>>(kPnpPlaneNormalParameter, {0.0, 0.3746, 0.9272});
   declare_parameter<double>(kPnpPlaneYawParameter, 0.0);
   declare_parameter<double>(kPnpPlaneDistanceParameter, 0.23);
   declare_parameter<bool>(kPnpEnableRectificationParameter, false);
