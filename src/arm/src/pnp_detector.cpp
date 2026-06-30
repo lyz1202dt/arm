@@ -198,9 +198,9 @@ std::vector<cv::Point2f> PnpDetector::checkRect(
       continue;
     }
 
-    // 轮廓面积与拟合四边形面积应接近，说明拟合结果可靠。
+    // 轮廓面积与拟合四边形面积允许存在更大偏差，提升大透视情况下的通过率。
     const double area_ratio = area / approx_area;
-    if (area_ratio < 0.8 || area_ratio > 1.2) {
+    if (area_ratio < 0.7 || area_ratio > 1.35) {
       continue;
     }
 
@@ -211,15 +211,15 @@ std::vector<cv::Point2f> PnpDetector::checkRect(
       continue;
     }
 
-    // 目标物近似正方形，宽高比过大则认为不是目标矩形。
+    // 大透视时投影宽高比会被拉大，因此放宽近正方形约束。
     const float wh_ratio = std::max(rect_w, rect_h) / std::min(rect_w, rect_h);
-    if (wh_ratio > 1.35F) {
+    if (wh_ratio > 1.8F) {
       continue;
     }
 
-    // 填充率用于排除过于瘦长或凹陷明显的轮廓。
+    // 透视较大时四边形对最小外接矩形的填充率会下降，因此放宽下限。
     const double fill_ratio = approx_area / (rect_w * rect_h);
-    if (fill_ratio < 0.65 || fill_ratio > 1.1) {
+    if (fill_ratio < 0.5 || fill_ratio > 1.15) {
       continue;
     }
 
@@ -246,10 +246,10 @@ std::vector<cv::Point2f> PnpDetector::checkRect(
       continue;
     }
 
-    // 四个角应接近直角，用于排除透视过大或形状明显不符的候选。
+    // 允许更强的透视畸变，只排除明显偏离矩形的候选。
     const float min_angle = *std::min_element(angles.begin(), angles.end());
     const float max_angle = *std::max_element(angles.begin(), angles.end());
-    if (min_angle < 60.0F || max_angle > 120.0F) {
+    if (min_angle < 45.0F || max_angle > 135.0F) {
       continue;
     }
 
