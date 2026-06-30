@@ -60,6 +60,15 @@ std::optional<PnpResult> PnpDetector::detectOnce(const cv::Mat & frame)
   const cv::Mat gamma_frame = applyGammaCorrection(frame);
   cv::Mat preview = gamma_frame.clone();
 
+  // 先做推理：没有检测框时，矩形约束区域为空，后续边缘处理必然无结果，
+  // 因此可在此早返回，省去无目标帧上昂贵的灰度/模糊/CLAHE/Canny 运算。
+  const auto detections = inference_->run(gamma_frame);
+  if (detections.empty()) {
+    cv::imshow("...", preview);
+    cv::waitKey(1);
+    return std::nullopt;
+  }
+
   cv::Mat gray;
   cv::cvtColor(gamma_frame, gray, cv::COLOR_BGR2GRAY);
   cv::GaussianBlur(gray, gray, cv::Size(5, 5), 10, 20);
@@ -69,7 +78,6 @@ std::optional<PnpResult> PnpDetector::detectOnce(const cv::Mat & frame)
   cv::Mat edges;
   cv::Canny(gray, edges, 50, 150);
 
-  const auto detections = inference_->run(gamma_frame);
   cv::Mat mask = cv::Mat::zeros(cv::Size(gamma_frame.cols, gamma_frame.rows), CV_8UC1);
   for (const auto & detection : detections) {
     cv::Rect box = detection.box;

@@ -101,7 +101,12 @@ ArmNode::ArmNode()
   }
 
   auto name_inference = std::make_shared<Inference>(name_model_path, cv::Size(640, 640), "", name_cuda);
-  auto pnp_inference = std::make_shared<Inference>(pnp_model_path, cv::Size(640, 640), "", pnp_cuda);
+  // pnp 与 name 默认指向同一个 ONNX 模型，且两个检测器都在同一后台线程串行调用推理，
+  // 因此模型路径与后端标志完全一致时复用同一实例，省去重复的磁盘加载、解析与内存占用。
+  std::shared_ptr<Inference> pnp_inference =
+    (pnp_model_path == name_model_path && pnp_cuda == name_cuda)
+    ? name_inference
+    : std::make_shared<Inference>(pnp_model_path, cv::Size(640, 640), "", pnp_cuda);
 
   box_grid_detector_ = std::make_unique<BoxGridDetector>(name_inference);
   pnp_detector_ = std::make_unique<PnpDetector>(pnp_inference);
