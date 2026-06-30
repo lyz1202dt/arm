@@ -2,8 +2,16 @@
 cmake_minimum_required(VERSION 3.8)
 project(arm)
 
+# 未显式指定构建类型时默认 Release，确保 CPU 推理等热点代码开启编译器优化。
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "构建类型" FORCE)
+endif()
+
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
+  # 针对当前主机指令集做高强度优化，显著加速 OpenCV DNN 的 CPU 推理与图像处理。
+  add_compile_options($<$<CONFIG:Release>:-O3>)
+  add_compile_options($<$<CONFIG:Release>:-march=native>)
 endif()
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)

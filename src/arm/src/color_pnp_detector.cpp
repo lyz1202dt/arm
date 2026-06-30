@@ -137,8 +137,9 @@ std::optional<cv::Point2f> ColorPnpDetector::findColorCentroid(
   cv::Mat mask;
   cv::inRange(lab, threshold.lower, threshold.upper, mask);
 
-  // 形态学开运算去除零散噪点，闭运算填补色块内部空洞。
-  cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
+  // 形态学核为常量，构建一次后复用，避免每帧每色块重复创建。
+  static const cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
+  // 开运算去除零散噪点，闭运算填补色块内部空洞。
   cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel);
   cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel);
 

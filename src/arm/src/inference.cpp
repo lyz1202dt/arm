@@ -99,14 +99,21 @@ std::vector<Detection> Inference::run(const cv::Mat & frame)
   std::vector<float> confidences;
   std::vector<cv::Rect> boxes;
 
+  const int class_count = static_cast<int>(classes_.size());
   for (int i = 0; i < rows; ++i) {
+    // 每一行前 4 个值是框信息，后面才是各类别分数。手写遍历求最大类别分数，
+    // 避免每行构造临时 cv::Mat 并调用 minMaxLoc 带来的开销（行数可达数千）。
     const float * class_scores = data + 4;
-    cv::Mat scores(1, static_cast<int>(classes_.size()), CV_32FC1, const_cast<float *>(class_scores));
-    cv::Point class_id_point;
-    double max_class_score = 0.0;
-    cv::minMaxLoc(scores, nullptr, &max_class_score, nullptr, &class_id_point);
+    int best_class_id = 0;
+    float max_class_score = class_scores[0];
+    for (int c = 1; c < class_count; ++c) {
+      if (class_scores[c] > max_class_score) {
+        max_class_score = class_scores[c];
+        best_class_id = c;
+      }
+    }
 
-    // 每一行前 4 个值是框信息，后面才是各类别分数；这里取最大类别分数作为该候选的类别置信度。
+    // 取最大类别分数作为该候选的类别置信度。
     if (max_class_score > model_score_threshold_) {
       // 模型输出的是中心点坐标加宽高，转换为左上角坐标的矩形并映射回原图。
       const float x = data[0];
@@ -123,8 +130,8 @@ std::vector<Detection> Inference::run(const cv::Mat & frame)
       // 与图像边界求交，裁掉越界部分，丢弃无效空框。
       box &= cv::Rect(0, 0, frame.cols, frame.rows);
       if (box.width > 0 && box.height > 0) {
-        confidences.push_back(static_cast<float>(max_class_score));
-        class_ids.push_back(class_id_point.x);
+        confidences.push_back(max_class_score);
+        class_ids.push_back(best_class_id);
         boxes.push_back(box);
       }
     }

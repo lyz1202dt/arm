@@ -2,7 +2,6 @@
 #include <arm/pnp_detector.hpp>
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <opencv2/highgui.hpp>
 #include <stdexcept>
@@ -14,21 +13,29 @@ namespace
 constexpr bool kEnableGammaCorrection = true;
 constexpr double kGamma = 0.7;
 
+// 伽马校正查找表与输入帧无关，首次调用时构建一次后常驻复用，避免每帧重复 256 次 pow。
+const cv::Mat & gammaLut()
+{
+  static const cv::Mat lut = [] {
+    cv::Mat table(1, 256, CV_8UC1);
+    unsigned char * data = table.ptr<unsigned char>();
+    for (int i = 0; i < 256; ++i) {
+      const double normalized = static_cast<double>(i) / 255.0;
+      data[i] = cv::saturate_cast<unsigned char>(std::pow(normalized, kGamma) * 255.0);
+    }
+    return table;
+  }();
+  return lut;
+}
+
 cv::Mat applyGammaCorrection(const cv::Mat & frame)
 {
   if (!kEnableGammaCorrection) {
     return frame;
   }
 
-  std::array<unsigned char, 256> lut_data{};
-  for (int i = 0; i < 256; ++i) {
-    const double normalized = static_cast<double>(i) / 255.0;
-    lut_data[i] = cv::saturate_cast<unsigned char>(std::pow(normalized, kGamma) * 255.0);
-  }
-
-  const cv::Mat lut(1, static_cast<int>(lut_data.size()), CV_8UC1, lut_data.data());
   cv::Mat corrected;
-  cv::LUT(frame, lut, corrected);
+  cv::LUT(frame, gammaLut(), corrected);
   return corrected;
 }
 }  // namespace
@@ -153,7 +160,8 @@ std::vector<cv::Point2f> PnpDetector::checkRect(
 {
   cv::bitwise_and(edge, mask, edge);
 
-  cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
+  // 膨胀核为常量，构建一次后复用，避免每帧重复创建。
+  static const cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
   cv::dilate(edge, edge, kernel);
 
   std::vector<std::vector<cv::Point>> contours;
