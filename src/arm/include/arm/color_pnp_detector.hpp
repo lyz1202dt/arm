@@ -48,6 +48,8 @@ private:
   std::vector<cv::Point3f> object_points_;
   // 四个色块的 LAB 阈值。
   std::array<LabThreshold, 4> color_thresholds_;
+  // findColorCentroid 中开/闭运算所用的固定结构元素，构造时建好后每帧复用。
+  cv::Mat morph_kernel_;
 };
 
 }  // namespace arm

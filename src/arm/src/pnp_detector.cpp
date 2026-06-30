@@ -2,7 +2,6 @@
 #include <arm/pnp_detector.hpp>
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <opencv2/highgui.hpp>
 #include <stdexcept>
@@ -14,27 +13,37 @@ namespace
 constexpr bool kEnableGammaCorrection = true;
 constexpr double kGamma = 0.7;
 
+// 伽马校正查找表只依赖编译期常量 kGamma，首次调用时构建一次后复用，避免每帧重建。
+const cv::Mat & gammaLut()
+{
+  static const cv::Mat lut = [] {
+    cv::Mat table(1, 256, CV_8UC1);
+    unsigned char * table_data = table.ptr<unsigned char>();
+    for (int i = 0; i < 256; ++i) {
+      const double normalized = static_cast<double>(i) / 255.0;
+      table_data[i] = cv::saturate_cast<unsigned char>(std::pow(normalized, kGamma) * 255.0);
+    }
+    return table;
+  }();
+  return lut;
+}
+
 cv::Mat applyGammaCorrection(const cv::Mat & frame)
 {
   if (!kEnableGammaCorrection) {
     return frame;
   }
 
-  std::array<unsigned char, 256> lut_data{};
-  for (int i = 0; i < 256; ++i) {
-    const double normalized = static_cast<double>(i) / 255.0;
-    lut_data[i] = cv::saturate_cast<unsigned char>(std::pow(normalized, kGamma) * 255.0);
-  }
-
-  const cv::Mat lut(1, static_cast<int>(lut_data.size()), CV_8UC1, lut_data.data());
   cv::Mat corrected;
-  cv::LUT(frame, lut, corrected);
+  cv::LUT(frame, gammaLut(), corrected);
   return corrected;
 }
 }  // namespace
 
 PnpDetector::PnpDetector(std::shared_ptr<Inference> inference)
-: inference_(std::move(inference)), clahe_(cv::createCLAHE(2.0))
+: inference_(std::move(inference)),
+  clahe_(cv::createCLAHE(2.0)),
+  dilate_kernel_(cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3)))
 {
   if (!inference_) {
     throw std::invalid_argument("PnpDetector 需要有效的 Inference 实例");
@@ -153,8 +162,7 @@ std::vector<cv::Point2f> PnpDetector::checkRect(
 {
   cv::bitwise_and(edge, mask, edge);
 
-  cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
-  cv::dilate(edge, edge, kernel);
+  cv::dilate(edge, edge, dilate_kernel_);
 
   std::vector<std::vector<cv::Point>> contours;
   std::vector<cv::Vec4i> hierarchy;

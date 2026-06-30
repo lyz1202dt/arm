@@ -40,6 +40,7 @@ double clampToByte(double value)
 }  // namespace
 
 ColorPnpDetector::ColorPnpDetector()
+: morph_kernel_(cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5)))
 {
   initPnpParameters();
   initColorThresholds();
@@ -138,9 +139,8 @@ std::optional<cv::Point2f> ColorPnpDetector::findColorCentroid(
   cv::inRange(lab, threshold.lower, threshold.upper, mask);
 
   // 形态学开运算去除零散噪点，闭运算填补色块内部空洞。
-  cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
-  cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel);
-  cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel);
+  cv::morphologyEx(mask, mask, cv::MORPH_OPEN, morph_kernel_);
+  cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, morph_kernel_);
 
   std::vector<std::vector<cv::Point>> contours;
   cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);

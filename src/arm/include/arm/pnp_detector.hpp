@@ -54,6 +54,8 @@ private:
   std::vector<cv::Point3f> object_points_;
   // 用于局部对比度增强的 CLAHE 算子。
   cv::Ptr<cv::CLAHE> clahe_;
+  // checkRect 中边缘膨胀所用的固定结构元素，构造时建好后每帧复用。
+  cv::Mat dilate_kernel_;
 };
 
 }  // namespace arm
