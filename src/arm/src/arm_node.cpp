@@ -41,10 +41,8 @@ constexpr std::chrono::milliseconds kVisionVarianceUpdateInterval{500};
 constexpr std::size_t kPnpWindowSize = 5;
 // 归一化方差时分母附加的极小值，防止均值接近 0 时除零。
 constexpr double kVarianceNormalizationEpsilon = 1e-6;
-// 箱子位置 PnP 连续若干帧归一化方差和低于该阈值即视为稳定，自动发布并结束。
-constexpr double kPnpStableVarianceThreshold = 0.01;
-// 色块正方形 PnP 连续若干帧归一化方差和低于该阈值即视为稳定，自动发布并结束。
-constexpr double kColorPnpStableVarianceThreshold = 0.01;
+// PnP 稳定判定阈值：窗口内 X、Y、Z 三轴的上下浮动幅度均需小于该值（单位米，即 5 毫米）。
+constexpr double kPnpStableRangeThreshold = 0.005;
 }  // namespace
 
 namespace arm
@@ -482,7 +480,13 @@ void ArmNode::runPnp()
       continue;
     }
 
-    appendPnpSample(*result);
+    // 先做卡尔曼平滑并剔除极端值，极端值不计入稳定判定窗口。
+    const auto smoothed = coordinate_filter_.update(*result);
+    if (!smoothed) {
+      continue;
+    }
+
+    appendPnpSample(*smoothed);
     if (!hasFullPnpWindow()) {
       continue;
     }
@@ -490,8 +494,11 @@ void ArmNode::runPnp()
     const PnpWindowStats stats = computePnpWindowStats();
     updateVisionVarianceParameter(stats.variance_sum);
 
-    // 窗口内坐标足够稳定，发布一次中心点均值后结束本次任务。
-    if (stats.variance_sum <= kPnpStableVarianceThreshold) {
+    // X、Y、Z 三轴的上下浮动幅度均小于阈值（5mm）时才视为稳定，发布中心点均值后结束。
+    if (stats.range_x < kPnpStableRangeThreshold &&
+      stats.range_y < kPnpStableRangeThreshold &&
+      stats.range_z < kPnpStableRangeThreshold)
+    {
       publishPnpPoint(stats.mean_x, stats.mean_y, stats.mean_z);
       RCLCPP_INFO(
         get_logger(), "箱子位置识别已稳定，发布中心点: x=%.4f y=%.4f z=%.4f",
@@ -525,7 +532,13 @@ void ArmNode::runColorPnp()
       continue;
     }
 
-    appendPnpSample(*result);
+    // 先做卡尔曼平滑并剔除极端值，极端值不计入稳定判定窗口。
+    const auto smoothed = coordinate_filter_.update(*result);
+    if (!smoothed) {
+      continue;
+    }
+
+    appendPnpSample(*smoothed);
     if (!hasFullPnpWindow()) {
       continue;
     }
@@ -533,8 +546,11 @@ void ArmNode::runColorPnp()
     const PnpWindowStats stats = computePnpWindowStats();
     updateVisionVarianceParameter(stats.variance_sum);
 
-    // 窗口内坐标足够稳定，发布一次中心点均值后结束本次任务。
-    if (stats.variance_sum <= kColorPnpStableVarianceThreshold) {
+    // X、Y、Z 三轴的上下浮动幅度均小于阈值（5mm）时才视为稳定，发布中心点均值后结束。
+    if (stats.range_x < kPnpStableRangeThreshold &&
+      stats.range_y < kPnpStableRangeThreshold &&
+      stats.range_z < kPnpStableRangeThreshold)
+    {
       publishColorPnpPoint(stats.mean_x, stats.mean_y, stats.mean_z);
       RCLCPP_INFO(
         get_logger(), "色块正方形识别已稳定，发布中心点: x=%.4f y=%.4f z=%.4f",
@@ -585,6 +601,8 @@ bool ArmNode::publishPnpBoxIndex()
 void ArmNode::resetPnpWindow()
 {
   pnp_window_.clear();
+  // 清空坐标滤波器历史状态，避免上一次任务的估计影响本次判定。
+  coordinate_filter_.reset();
   try {
     set_parameter(rclcpp::Parameter(kVisionVarianceParameter, 0.0));
   } catch (const std::exception & exception) {
@@ -625,7 +643,15 @@ ArmNode::PnpWindowStats ArmNode::computePnpWindowStats() const
   stats.mean_y /= sample_count;
   stats.mean_z /= sample_count;
 
-  // 第二遍累加各轴离差平方，得到方差。
+  // 初始化三轴极值为首个样本，用于统计窗口内的上下浮动幅度。
+  double min_x = pnp_window_.front().x;
+  double max_x = min_x;
+  double min_y = pnp_window_.front().y;
+  double max_y = min_y;
+  double min_z = pnp_window_.front().z;
+  double max_z = min_z;
+
+  // 第二遍累加各轴离差平方得到方差，同时更新三轴极值。
   for (const auto & sample : pnp_window_) {
     const double dx = sample.x - stats.mean_x;
     const double dy = sample.y - stats.mean_y;
@@ -633,6 +659,13 @@ ArmNode::PnpWindowStats ArmNode::computePnpWindowStats() const
     stats.var_x += dx * dx;
     stats.var_y += dy * dy;
     stats.var_z += dz * dz;
+
+    min_x = std::min(min_x, sample.x);
+    max_x = std::max(max_x, sample.x);
+    min_y = std::min(min_y, sample.y);
+    max_y = std::max(max_y, sample.y);
+    min_z = std::min(min_z, sample.z);
+    max_z = std::max(max_z, sample.z);
   }
 
   stats.var_x /= sample_count;
@@ -641,8 +674,13 @@ ArmNode::PnpWindowStats ArmNode::computePnpWindowStats() const
   const double normalized_var_x = stats.var_x / (std::abs(stats.mean_x) + kVarianceNormalizationEpsilon);
   const double normalized_var_y = stats.var_y / (std::abs(stats.mean_y) + kVarianceNormalizationEpsilon);
   const double normalized_var_z = stats.var_z / (std::abs(stats.mean_z) + kVarianceNormalizationEpsilon);
-  // XYZ 三轴同等重要，归一化方差直接求和作为整体稳定度衡量。
+  // 归一化方差和仅用于对外上报 vision_variance 参数，反映整体稳定度。
   stats.variance_sum = normalized_var_x + normalized_var_y + normalized_var_z;
+
+  // 各轴极差（max-min）作为该轴上下浮动幅度，供稳定判定使用。
+  stats.range_x = max_x - min_x;
+  stats.range_y = max_y - min_y;
+  stats.range_z = max_z - min_z;
   return stats;
 }
 

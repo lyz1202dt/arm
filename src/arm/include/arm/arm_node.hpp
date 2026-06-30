@@ -16,6 +16,7 @@
 
 #include <arm/box_grid_detector.hpp>
 #include <arm/color_pnp_detector.hpp>
+#include <arm/coordinate_filter.hpp>
 #include <arm/pnp_detector.hpp>
 #include <geometry_msgs/msg/point.hpp>
 #include <opencv2/core/mat.hpp>
@@ -69,6 +70,10 @@ private:
     double var_y{};
     double var_z{};
     double variance_sum{};
+    // 窗口内各轴的上下浮动幅度（极差 max-min），单位米，用于稳定判定。
+    double range_x{};
+    double range_y{};
+    double range_z{};
   };
 
   void onCommand(const std_msgs::msg::Int32::SharedPtr msg);
@@ -125,6 +130,8 @@ private:
   RecognitionTask pending_task_{RecognitionTask::BoxGrid};
   std::optional<RecognitionTask> active_task_;
   std::deque<PnpResult> pnp_window_;
+  // 对 PnP 中心点坐标做卡尔曼平滑并剔除极端值，PnP 与色块识别共用。
+  CoordinateFilter coordinate_filter_;
   std::chrono::steady_clock::time_point last_variance_update_{};
 };
 
