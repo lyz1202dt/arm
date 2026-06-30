@@ -154,12 +154,13 @@ std::optional<int> PnpDetector::detectBoxIndex(const cv::Mat & frame)
 void PnpDetector::initPnpParameters()
 {
   camera_matrix_ = (cv::Mat_<double>(3, 3) <<
-    330.732920, 0.000000, 323.284477,
-    0.000000, 330.604624, 235.624095,
+    331.108119, 0.000000, 329.710143,
+    0.000000, 331.215455, 243.548501,
     0.000000, 0.000000, 1.000000);
 
+
   dist_coeffs_ = (cv::Mat_<double>(1, 5) <<
-    -0.015437, -0.017894, -0.000542, 0.001233, 0.000000);
+    -0.017538,-0.016338,-0.001018,-0.000804,0.000000);
 
   constexpr float width = 0.25F;
   constexpr float height = 0.25F;
