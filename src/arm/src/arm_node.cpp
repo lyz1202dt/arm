@@ -591,15 +591,20 @@ ArmNode::PnpWindowStats ArmNode::computePnpWindowStats() const
   for (const auto & sample : pnp_window_) {
     const double dx = sample.x - stats.mean_x;
     const double dy = sample.y - stats.mean_y;
+    const double dz = sample.z - stats.mean_z;
     stats.var_x += dx * dx;
     stats.var_y += dy * dy;
+    stats.var_z += dz * dz;
   }
 
   stats.var_x /= sample_count;
   stats.var_y /= sample_count;
+  stats.var_z /= sample_count;
   const double normalized_var_x = stats.var_x / (std::abs(stats.mean_x) + kVarianceNormalizationEpsilon);
   const double normalized_var_y = stats.var_y / (std::abs(stats.mean_y) + kVarianceNormalizationEpsilon);
-  stats.variance_sum = normalized_var_x + normalized_var_y;
+  const double normalized_var_z = stats.var_z / (std::abs(stats.mean_z) + kVarianceNormalizationEpsilon);
+  // XYZ 三轴同等重要，归一化方差直接求和作为整体稳定度衡量。
+  stats.variance_sum = normalized_var_x + normalized_var_y + normalized_var_z;
   return stats;
 }
 

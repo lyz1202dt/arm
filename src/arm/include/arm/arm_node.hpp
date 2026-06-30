@@ -67,6 +67,7 @@ private:
     double mean_z{};
     double var_x{};
     double var_y{};
+    double var_z{};
     double variance_sum{};
   };
 
