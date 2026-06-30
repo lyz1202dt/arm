@@ -58,11 +58,13 @@ std::optional<PnpResult> PnpDetector::detectOnce(const cv::Mat & frame)
   }
 
   const cv::Mat gamma_frame = applyGammaCorrection(frame);
-  cv::Mat preview = gamma_frame.clone();
+  cv::Mat undistorted_frame;
+  cv::undistort(gamma_frame, undistorted_frame, camera_matrix_, dist_coeffs_);
+  cv::Mat preview = undistorted_frame.clone();
 
   // 先做推理：没有检测框时，矩形约束区域为空，后续边缘处理必然无结果，
   // 因此可在此早返回，省去无目标帧上昂贵的灰度/模糊/CLAHE/Canny 运算。
-  const auto detections = inference_->run(gamma_frame);
+  const auto detections = inference_->run(undistorted_frame);
   if (detections.empty()) {
     cv::imshow("...", preview);
     cv::waitKey(1);
@@ -70,7 +72,7 @@ std::optional<PnpResult> PnpDetector::detectOnce(const cv::Mat & frame)
   }
 
   cv::Mat gray;
-  cv::cvtColor(gamma_frame, gray, cv::COLOR_BGR2GRAY);
+  cv::cvtColor(undistorted_frame, gray, cv::COLOR_BGR2GRAY);
   cv::GaussianBlur(gray, gray, cv::Size(5, 5), 10, 20);
   // 使用 CLAHE 提升局部对比度，增强边缘可见性，便于后续矩形轮廓提取。
   clahe_->apply(gray, gray);
@@ -78,7 +80,7 @@ std::optional<PnpResult> PnpDetector::detectOnce(const cv::Mat & frame)
   cv::Mat edges;
   cv::Canny(gray, edges, 50, 150);
 
-  cv::Mat mask = cv::Mat::zeros(cv::Size(gamma_frame.cols, gamma_frame.rows), CV_8UC1);
+  cv::Mat mask = cv::Mat::zeros(cv::Size(undistorted_frame.cols, undistorted_frame.rows), CV_8UC1);
   for (const auto & detection : detections) {
     cv::Rect box = detection.box;
     // 在检测框基础上适度外扩，避免边缘刚好落在框外导致目标轮廓被截断。
@@ -86,7 +88,7 @@ std::optional<PnpResult> PnpDetector::detectOnce(const cv::Mat & frame)
     box.y -= static_cast<int>(box.height * 0.1);
     box.height = static_cast<int>(box.height * 1.2);
     box.width = static_cast<int>(box.width * 1.2);
-    box &= cv::Rect(0, 0, gamma_frame.cols, gamma_frame.rows);
+    box &= cv::Rect(0, 0, undistorted_frame.cols, undistorted_frame.rows);
     if (box.width > 0 && box.height > 0) {
       cv::rectangle(mask, box, cv::Scalar(255), -1);
     }
@@ -103,11 +105,15 @@ std::optional<PnpResult> PnpDetector::detectOnce(const cv::Mat & frame)
 
   best_rect_points = sortRectanglePoints(best_rect_points);
 
+  std::vector<cv::Point2f> normalized_rect_points;
+  cv::undistortPoints(
+    best_rect_points, normalized_rect_points, camera_matrix_, cv::noArray());
+
   cv::Mat rvec;
   cv::Mat tvec;
   const bool success = cv::solvePnP(
-    object_points_, best_rect_points, camera_matrix_, dist_coeffs_, rvec, tvec, false,
-    cv::SOLVEPNP_ITERATIVE);
+    object_points_, normalized_rect_points, cv::Mat::eye(3, 3, CV_64F), cv::noArray(), rvec, tvec,
+    false, cv::SOLVEPNP_ITERATIVE);
 
   if (!success || tvec.empty()) {
     cv::imshow("...", preview);
@@ -134,7 +140,9 @@ std::optional<int> PnpDetector::detectBoxIndex(const cv::Mat & frame)
   }
 
   const cv::Mat gamma_frame = applyGammaCorrection(frame);
-  const auto detections = inference_->run(gamma_frame);
+  cv::Mat undistorted_frame;
+  cv::undistort(gamma_frame, undistorted_frame, camera_matrix_, dist_coeffs_);
+  const auto detections = inference_->run(undistorted_frame);
   if (detections.empty()) {
     return std::nullopt;
   }
