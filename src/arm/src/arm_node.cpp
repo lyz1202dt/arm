@@ -45,6 +45,24 @@ constexpr double kVarianceNormalizationEpsilon = 1e-6;
 constexpr double kPnpStableVarianceThreshold = 0.01;
 // 色块正方形 PnP 连续若干帧归一化方差和低于该阈值即视为稳定，自动发布并结束。
 constexpr double kColorPnpStableVarianceThreshold = 0.01;
+// PnP 去畸变与平面矫正所用的相机焦距 fx。
+constexpr char kPnpFxParameter[] = "pnp_fx";
+// PnP 去畸变与平面矫正所用的相机焦距 fy。
+constexpr char kPnpFyParameter[] = "pnp_fy";
+// PnP 去畸变与平面矫正所用的相机主点 cx。
+constexpr char kPnpCxParameter[] = "pnp_cx";
+// PnP 去畸变与平面矫正所用的相机主点 cy。
+constexpr char kPnpCyParameter[] = "pnp_cy";
+// PnP 去畸变与平面矫正所用的径向/切向畸变系数。
+constexpr char kPnpDistCoeffsParameter[] = "pnp_dist_coeffs";
+// 顶面平面法向在相机坐标系下的方向。
+constexpr char kPnpPlaneNormalParameter[] = "pnp_plane_normal";
+// 平面局部坐标系绕法向的旋转角（弧度）。
+constexpr char kPnpPlaneYawParameter[] = "pnp_plane_yaw";
+// 相机到顶面平面的法向距离。
+constexpr char kPnpPlaneDistanceParameter[] = "pnp_plane_distance";
+// 是否启用 PnP 前的去畸变和平面矫正。
+constexpr char kPnpEnableRectificationParameter[] = "pnp_enable_rectification";
 }  // namespace
 
 namespace arm
@@ -94,6 +112,16 @@ ArmNode::ArmNode()
   declare_parameter<bool>(kStartPnpParameter, false);
   declare_parameter<bool>(kCancelRecognitionParameter, false);
   declare_parameter<double>(kVisionVarianceParameter, 0.0);
+  declare_parameter<double>(kPnpFxParameter, 330.732920);
+  declare_parameter<double>(kPnpFyParameter, 330.604624);
+  declare_parameter<double>(kPnpCxParameter, 323.284477);
+  declare_parameter<double>(kPnpCyParameter, 235.624095);
+  declare_parameter<std::vector<double>>(kPnpDistCoeffsParameter, {
+    -0.015437, -0.017894, -0.000542, 0.001233, 0.0});
+  declare_parameter<std::vector<double>>(kPnpPlaneNormalParameter, {0.0, 0.0, 1.0});
+  declare_parameter<double>(kPnpPlaneYawParameter, 0.0);
+  declare_parameter<double>(kPnpPlaneDistanceParameter, 1.0);
+  declare_parameter<bool>(kPnpEnableRectificationParameter, false);
 
   openCamera();
   if (!camera_.isOpened()) {
@@ -109,7 +137,7 @@ ArmNode::ArmNode()
     : std::make_shared<Inference>(pnp_model_path, cv::Size(640, 640), "", pnp_cuda);
 
   box_grid_detector_ = std::make_unique<BoxGridDetector>(name_inference);
-  pnp_detector_ = std::make_unique<PnpDetector>(pnp_inference);
+  pnp_detector_ = std::make_unique<PnpDetector>(pnp_inference, buildPnpDetectorConfig());
   color_pnp_detector_ = std::make_unique<ColorPnpDetector>();
 
   box_grid_pub_ = create_publisher<std_msgs::msg::Int32MultiArray>("box_id_grid", kQueueSize);
@@ -333,6 +361,36 @@ std::string ArmNode::cameraSourceLabel() const
     return camera_device_;
   }
   return camera_index_;
+}
+
+PnpDetectorConfig ArmNode::buildPnpDetectorConfig() const
+{
+  PnpDetectorConfig config;
+  config.fx = get_parameter(kPnpFxParameter).as_double();
+  config.fy = get_parameter(kPnpFyParameter).as_double();
+  config.cx = get_parameter(kPnpCxParameter).as_double();
+  config.cy = get_parameter(kPnpCyParameter).as_double();
+  config.plane_yaw = get_parameter(kPnpPlaneYawParameter).as_double();
+  config.plane_distance = get_parameter(kPnpPlaneDistanceParameter).as_double();
+  config.enable_rectification = get_parameter(kPnpEnableRectificationParameter).as_bool();
+
+  const auto dist_coeffs = get_parameter(kPnpDistCoeffsParameter).as_double_array();
+  if (dist_coeffs.size() != config.dist_coeffs.size()) {
+    throw std::runtime_error("pnp_dist_coeffs 必须包含 5 个元素");
+  }
+  for (std::size_t i = 0; i < config.dist_coeffs.size(); ++i) {
+    config.dist_coeffs[i] = dist_coeffs[i];
+  }
+
+  const auto plane_normal = get_parameter(kPnpPlaneNormalParameter).as_double_array();
+  if (plane_normal.size() != config.plane_normal.size()) {
+    throw std::runtime_error("pnp_plane_normal 必须包含 3 个元素");
+  }
+  for (std::size_t i = 0; i < config.plane_normal.size(); ++i) {
+    config.plane_normal[i] = plane_normal[i];
+  }
+
+  return config;
 }
 
 bool ArmNode::openCamera()

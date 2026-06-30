@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <opencv2/calib3d.hpp>
 #include <opencv2/highgui.hpp>
 #include <stdexcept>
 
@@ -12,6 +13,8 @@ namespace
 {
 constexpr bool kEnableGammaCorrection = true;
 constexpr double kGamma = 0.7;
+constexpr double kPlaneNormalNormEpsilon = 1e-6;
+constexpr double kPlaneDistanceEpsilon = 1e-6;
 
 // 伽马校正查找表只依赖编译期常量 kGamma，首次调用时构建一次后复用，避免每帧重建。
 const cv::Mat & gammaLut()
@@ -38,17 +41,34 @@ cv::Mat applyGammaCorrection(const cv::Mat & frame)
   cv::LUT(frame, gammaLut(), corrected);
   return corrected;
 }
+
+cv::Vec3d normalizeVector(const cv::Vec3d & vector)
+{
+  const double norm = cv::norm(vector);
+  if (norm < kPlaneNormalNormEpsilon) {
+    throw std::invalid_argument("平面法向长度过小，无法构造平面矫正坐标系");
+  }
+  return vector / norm;
+}
+
+cv::Vec3d rotateAroundAxis(const cv::Vec3d & vector, const cv::Vec3d & axis, double angle)
+{
+  return vector * std::cos(angle) +
+         axis.cross(vector) * std::sin(angle) +
+         axis * axis.dot(vector) * (1.0 - std::cos(angle));
+}
 }  // namespace
 
-PnpDetector::PnpDetector(std::shared_ptr<Inference> inference)
+PnpDetector::PnpDetector(std::shared_ptr<Inference> inference, const PnpDetectorConfig & config)
 : inference_(std::move(inference)),
   clahe_(cv::createCLAHE(2.0)),
-  dilate_kernel_(cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3)))
+  dilate_kernel_(cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3))),
+  enable_rectification_(config.enable_rectification)
 {
   if (!inference_) {
     throw std::invalid_argument("PnpDetector 需要有效的 Inference 实例");
   }
-  initPnpParameters();
+  initPnpParameters(config);
 }
 
 std::optional<PnpResult> PnpDetector::detectOnce(const cv::Mat & frame)
@@ -57,7 +77,12 @@ std::optional<PnpResult> PnpDetector::detectOnce(const cv::Mat & frame)
     return std::nullopt;
   }
 
-  const cv::Mat gamma_frame = applyGammaCorrection(frame);
+  const cv::Mat processed_frame = preprocessFrame(frame);
+  if (processed_frame.empty()) {
+    return std::nullopt;
+  }
+
+  const cv::Mat gamma_frame = applyGammaCorrection(processed_frame);
   cv::Mat preview = gamma_frame.clone();
 
   // 先做推理：没有检测框时，矩形约束区域为空，后续边缘处理必然无结果，
@@ -106,8 +131,10 @@ std::optional<PnpResult> PnpDetector::detectOnce(const cv::Mat & frame)
   cv::Mat rvec;
   cv::Mat tvec;
   const bool success = cv::solvePnP(
-    object_points_, best_rect_points, camera_matrix_, dist_coeffs_, rvec, tvec, false,
-    cv::SOLVEPNP_ITERATIVE);
+    object_points_, best_rect_points,
+    enable_rectification_ ? rectified_camera_matrix_ : camera_matrix_,
+    enable_rectification_ ? rectified_dist_coeffs_ : dist_coeffs_,
+    rvec, tvec, false, cv::SOLVEPNP_ITERATIVE);
 
   if (!success || tvec.empty()) {
     cv::imshow("...", preview);
@@ -133,7 +160,12 @@ std::optional<int> PnpDetector::detectBoxIndex(const cv::Mat & frame)
     return std::nullopt;
   }
 
-  const cv::Mat gamma_frame = applyGammaCorrection(frame);
+  const cv::Mat processed_frame = preprocessFrame(frame);
+  if (processed_frame.empty()) {
+    return std::nullopt;
+  }
+
+  const cv::Mat gamma_frame = applyGammaCorrection(processed_frame);
   const auto detections = inference_->run(gamma_frame);
   if (detections.empty()) {
     return std::nullopt;
@@ -143,24 +175,98 @@ std::optional<int> PnpDetector::detectBoxIndex(const cv::Mat & frame)
   return detections.front().class_id;
 }
 
-void PnpDetector::initPnpParameters()
+void PnpDetector::initPnpParameters(const PnpDetectorConfig & config)
 {
   camera_matrix_ = (cv::Mat_<double>(3, 3) <<
-    330.732920, 0.000000, 323.284477,
-    0.000000, 330.604624, 235.624095,
-    0.000000, 0.000000, 1.000000);
+    config.fx, 0.0, config.cx,
+    0.0, config.fy, config.cy,
+    0.0, 0.0, 1.0);
 
   dist_coeffs_ = (cv::Mat_<double>(1, 5) <<
-    -0.015437, -0.017894, -0.000542, 0.001233, 0.000000);
+    config.dist_coeffs[0], config.dist_coeffs[1], config.dist_coeffs[2],
+    config.dist_coeffs[3], config.dist_coeffs[4]);
+
+  plane_normal_ = normalizeVector(cv::Vec3d(
+    config.plane_normal[0], config.plane_normal[1], config.plane_normal[2]));
+  plane_yaw_ = config.plane_yaw;
+  plane_distance_ = config.plane_distance;
+  if (plane_distance_ <= kPlaneDistanceEpsilon) {
+    throw std::invalid_argument("平面距离必须大于 0");
+  }
 
   constexpr float width = 0.25F;
   constexpr float height = 0.25F;
   object_points_.clear();
   // 目标物被建模为位于 Z=0 平面上的矩形，四点顺序需与图像点顺序一致。
-  object_points_.push_back(cv::Point3f(-width / 2.0F, -height / 2.0F, 0.125));
-  object_points_.push_back(cv::Point3f(width / 2.0F, -height / 2.0F, 0.125));
-  object_points_.push_back(cv::Point3f(width / 2.0F, height / 2.0F, 0.125));
-  object_points_.push_back(cv::Point3f(-width / 2.0F, height / 2.0F, 0.125));
+  object_points_.push_back(cv::Point3f(-width / 2.0F, -height / 2.0F, 0.125F));
+  object_points_.push_back(cv::Point3f(width / 2.0F, -height / 2.0F, 0.125F));
+  object_points_.push_back(cv::Point3f(width / 2.0F, height / 2.0F, 0.125F));
+  object_points_.push_back(cv::Point3f(-width / 2.0F, height / 2.0F, 0.125F));
+}
+
+cv::Mat PnpDetector::preprocessFrame(const cv::Mat & frame)
+{
+  if (!enable_rectification_) {
+    return frame;
+  }
+
+  if (!ensurePreprocessCache(frame.size())) {
+    return cv::Mat();
+  }
+
+  cv::Mat undistorted_frame;
+  cv::remap(frame, undistorted_frame, undistort_map1_, undistort_map2_, cv::INTER_LINEAR);
+
+  cv::Mat rectified_frame;
+  cv::warpPerspective(
+    undistorted_frame, rectified_frame, plane_rectification_homography_, frame.size(),
+    cv::INTER_LINEAR, cv::BORDER_CONSTANT);
+  return rectified_frame;
+}
+
+bool PnpDetector::ensurePreprocessCache(const cv::Size & frame_size)
+{
+  if (preprocess_cache_ready_ && preprocess_frame_size_ == frame_size) {
+    return true;
+  }
+
+  if (frame_size.width <= 0 || frame_size.height <= 0) {
+    return false;
+  }
+
+  rectified_camera_matrix_ = camera_matrix_.clone();
+  rectified_camera_matrix_.at<double>(0, 2) = static_cast<double>(frame_size.width) * 0.5;
+  rectified_camera_matrix_.at<double>(1, 2) = static_cast<double>(frame_size.height) * 0.5;
+  rectified_dist_coeffs_ = cv::Mat::zeros(1, 5, CV_64F);
+
+  cv::initUndistortRectifyMap(
+    camera_matrix_, dist_coeffs_, cv::Mat(), camera_matrix_, frame_size,
+    CV_32FC1, undistort_map1_, undistort_map2_);
+
+  const cv::Vec3d normal = plane_normal_;
+  const cv::Vec3d reference_axis =
+    std::abs(normal[2]) < 0.9 ? cv::Vec3d(0.0, 0.0, 1.0) : cv::Vec3d(0.0, 1.0, 0.0);
+  const cv::Vec3d base_x = normalizeVector(reference_axis.cross(normal));
+  const cv::Vec3d plane_x = normalizeVector(rotateAroundAxis(base_x, normal, plane_yaw_));
+  const cv::Vec3d plane_y = normalizeVector(normal.cross(plane_x));
+  const cv::Vec3d plane_origin = normal * plane_distance_;
+
+  cv::Mat plane_to_camera = (cv::Mat_<double>(3, 3) <<
+    plane_x[0], plane_y[0], plane_origin[0],
+    plane_x[1], plane_y[1], plane_origin[1],
+    plane_x[2], plane_y[2], plane_origin[2]);
+  const cv::Mat source_homography = camera_matrix_ * plane_to_camera;
+
+  cv::Mat virtual_plane_to_camera = (cv::Mat_<double>(3, 3) <<
+    1.0, 0.0, 0.0,
+    0.0, 1.0, 0.0,
+    0.0, 0.0, plane_distance_);
+  const cv::Mat target_homography = rectified_camera_matrix_ * virtual_plane_to_camera;
+
+  plane_rectification_homography_ = target_homography * source_homography.inv();
+  preprocess_frame_size_ = frame_size;
+  preprocess_cache_ready_ = true;
+  return true;
 }
 
 std::vector<cv::Point2f> PnpDetector::checkRect(

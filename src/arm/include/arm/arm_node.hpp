@@ -85,6 +85,7 @@ private:
   void destroyRecognitionUi();
   void cleanupRecognitionResources();
   bool readCameraFrame(cv::Mat & frame, const char * task_name);
+  PnpDetectorConfig buildPnpDetectorConfig() const;
 
   void runBoxGrid();
   bool publishGridIfRecognitionActive(const std::array<int32_t, 8> & grid);
