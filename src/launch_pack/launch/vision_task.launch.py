@@ -9,11 +9,5 @@ def generate_launch_description():
             executable='arm_node',
             name='arm_vision_task',
             output='screen',
-        ),
-        Node(
-            package='arithmetic_problem',
-            executable='arithmetic_problem',
-            name='arithmetic_problem_node',
-            output='screen',
-        ),
+        )
     ])
