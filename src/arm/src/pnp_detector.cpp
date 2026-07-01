@@ -12,6 +12,7 @@ namespace
 {
 constexpr bool kEnableGammaCorrection = true;
 constexpr double kGamma = 0.7;
+constexpr int kMaskExpandPixels = 3;
 
 // 伽马校正查找表只依赖编译期常量 kGamma，首次调用时构建一次后复用，避免每帧重建。
 const cv::Mat & gammaLut()
@@ -62,15 +63,6 @@ std::optional<PnpResult> PnpDetector::detectOnce(const cv::Mat & frame)
   cv::undistort(gamma_frame, undistorted_frame, camera_matrix_, dist_coeffs_);
   cv::Mat preview = undistorted_frame.clone();
 
-  // 先做推理：没有检测框时，矩形约束区域为空，后续边缘处理必然无结果，
-  // 因此可在此早返回，省去无目标帧上昂贵的灰度/模糊/CLAHE/Canny 运算。
-  const auto detections = inference_->run(undistorted_frame);
-  if (detections.empty()) {
-    cv::imshow("...", preview);
-    cv::waitKey(1);
-    return std::nullopt;
-  }
-
   cv::Mat gray;
   cv::cvtColor(undistorted_frame, gray, cv::COLOR_BGR2GRAY);
   cv::GaussianBlur(gray, gray, cv::Size(5, 5), 10, 20);
@@ -80,14 +72,21 @@ std::optional<PnpResult> PnpDetector::detectOnce(const cv::Mat & frame)
   cv::Mat edges;
   cv::Canny(gray, edges, 50, 150);
 
+  const auto detections = inference_->run(undistorted_frame);
+  if (detections.empty()) {
+    cv::imshow("...", preview);
+    cv::waitKey(1);
+    return std::nullopt;
+  }
+
   cv::Mat mask = cv::Mat::zeros(cv::Size(undistorted_frame.cols, undistorted_frame.rows), CV_8UC1);
   for (const auto & detection : detections) {
     cv::Rect box = detection.box;
-    // 在检测框基础上适度外扩，避免边缘刚好落在框外导致目标轮廓被截断。
-    box.x -= static_cast<int>(box.height * 0.1);
-    box.y -= static_cast<int>(box.height * 0.1);
-    box.height = static_cast<int>(box.height * 1.2);
-    box.width = static_cast<int>(box.width * 1.2);
+    // 参考项目会对检测框做固定像素外扩，避免目标边缘恰好落在框外导致轮廓被截断。
+    box.x -= kMaskExpandPixels;
+    box.y -= kMaskExpandPixels;
+    box.width += 2 * kMaskExpandPixels;
+    box.height += 2 * kMaskExpandPixels;
     box &= cv::Rect(0, 0, undistorted_frame.cols, undistorted_frame.rows);
     if (box.width > 0 && box.height > 0) {
       cv::rectangle(mask, box, cv::Scalar(255), -1);
@@ -113,7 +112,7 @@ std::optional<PnpResult> PnpDetector::detectOnce(const cv::Mat & frame)
   cv::Mat tvec;
   const bool success = cv::solvePnP(
     object_points_, normalized_rect_points, cv::Mat::eye(3, 3, CV_64F), cv::noArray(), rvec, tvec,
-    false, cv::SOLVEPNP_ITERATIVE);
+    false, cv::SOLVEPNP_IPPE);
 
   if (!success || tvec.empty()) {
     cv::imshow("...", preview);
@@ -166,10 +165,10 @@ void PnpDetector::initPnpParameters()
   constexpr float height = 0.25F;
   object_points_.clear();
   // 目标物被建模为位于 Z=0 平面上的矩形，四点顺序需与图像点顺序一致。
-  object_points_.push_back(cv::Point3f(-width / 2.0F, -height / 2.0F, 0.125));
-  object_points_.push_back(cv::Point3f(width / 2.0F, -height / 2.0F, 0.125));
-  object_points_.push_back(cv::Point3f(width / 2.0F, height / 2.0F, 0.125));
-  object_points_.push_back(cv::Point3f(-width / 2.0F, height / 2.0F, 0.125));
+  object_points_.push_back(cv::Point3f(-width / 2.0F, -height / 2.0F, 0.0F));
+  object_points_.push_back(cv::Point3f(width / 2.0F, -height / 2.0F, 0.0F));
+  object_points_.push_back(cv::Point3f(width / 2.0F, height / 2.0F, 0.0F));
+  object_points_.push_back(cv::Point3f(-width / 2.0F, height / 2.0F, 0.0F));
 }
 
 std::vector<cv::Point2f> PnpDetector::checkRect(
@@ -207,11 +206,11 @@ std::vector<cv::Point2f> PnpDetector::checkRect(
       continue;
     }
 
-    // 轮廓面积与拟合四边形面积允许存在更大偏差，提升大透视情况下的通过率。
-    const double area_ratio = area / approx_area;
-    if (area_ratio < 0.7 || area_ratio > 1.35) {
-      continue;
-    }
+  // 轮廓面积与拟合四边形面积之比优先对齐参考项目，再叠加当前项目的额外约束。
+  const double area_ratio = area / approx_area;
+  if (area_ratio < 0.8 || area_ratio > 1.2) {
+    continue;
+  }
 
     const cv::RotatedRect min_rect = cv::minAreaRect(approx);
     const float rect_w = min_rect.size.width;
@@ -220,13 +219,13 @@ std::vector<cv::Point2f> PnpDetector::checkRect(
       continue;
     }
 
-    // 大透视时投影宽高比会被拉大，因此放宽近正方形约束。
+    // 保留当前项目的宽高比约束，抑制明显偏离箱面形状的候选。
     const float wh_ratio = std::max(rect_w, rect_h) / std::min(rect_w, rect_h);
     if (wh_ratio > 1.8F) {
       continue;
     }
 
-    // 透视较大时四边形对最小外接矩形的填充率会下降，因此放宽下限。
+    // 保留当前项目的填充率过滤，继续作为误检保护条件。
     const double fill_ratio = approx_area / (rect_w * rect_h);
     if (fill_ratio < 0.5 || fill_ratio > 1.15) {
       continue;
@@ -255,10 +254,10 @@ std::vector<cv::Point2f> PnpDetector::checkRect(
       continue;
     }
 
-    // 允许更强的透视畸变，只排除明显偏离矩形的候选。
+    // 角度范围对齐参考项目，允许一定透视但排除明显非矩形候选。
     const float min_angle = *std::min_element(angles.begin(), angles.end());
     const float max_angle = *std::max_element(angles.begin(), angles.end());
-    if (min_angle < 45.0F || max_angle > 135.0F) {
+    if (min_angle < 30.0F || max_angle > 150.0F) {
       continue;
     }
 

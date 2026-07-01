@@ -1,10 +1,12 @@
 // 机械臂视觉 ROS2 主节点，负责相机初始化、命令分发和识别结果发布。
+#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <arm/arm_node.hpp>
 
 #include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <filesystem>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -19,10 +21,14 @@
 
 namespace
 {
+namespace fs = std::filesystem;
+
 // ROS2 发布/订阅队列深度，取较大值以容忍下游短暂处理不及时。
 constexpr int kQueueSize = 50000;
-// 默认 USB 摄像头设备节点，按 by-id 路径指定避免索引漂移。
-const char * kDefaultCameraIndex = "/dev/v4l/by-id/usb-HD_Camera_Manufacturer_USB_2.0_Camera-video-index0";
+// 默认相机索引，供未显式指定设备路径时回退使用。
+const char * kDefaultCameraIndex = "0";
+// 包内默认模型相对路径。
+const char * kDefaultModelRelativePath = "best.onnx";
 // 单次读帧失败后的最大重试次数，超过则放弃本次识别命令。
 constexpr int kCameraReadMaxRetries = 10;
 // 触发箱子矩阵识别的布尔参数名。
@@ -45,6 +51,40 @@ constexpr double kVarianceNormalizationEpsilon = 1e-6;
 constexpr double kPnpStableVarianceThreshold = 0.01;
 // 色块正方形 PnP 连续若干帧归一化方差和低于该阈值即视为稳定，自动发布并结束。
 constexpr double kColorPnpStableVarianceThreshold = 0.01;
+
+cv::String resolveModelPath(const std::string & configured_path)
+{
+  if (configured_path.empty()) {
+    throw std::runtime_error("模型路径不能为空");
+  }
+
+  const fs::path path(configured_path);
+  if (path.is_absolute()) {
+    return configured_path;
+  }
+
+  const fs::path share_dir = ament_index_cpp::get_package_share_directory("arm");
+  const fs::path direct_candidate = share_dir / path;
+  if (fs::exists(direct_candidate)) {
+    return direct_candidate.string();
+  }
+
+  const fs::path model_candidate = share_dir / "models" / path;
+  if (fs::exists(model_candidate)) {
+    return model_candidate.string();
+  }
+
+#ifdef ARM_SOURCE_DIR
+  const fs::path source_candidate = fs::path(ARM_SOURCE_DIR) / path;
+  if (fs::exists(source_candidate)) {
+    return source_candidate.string();
+  }
+#endif
+
+  throw std::runtime_error(
+          "无法解析模型路径: " + configured_path +
+          "，已尝试包资源目录中的相对路径");
+}
 }  // namespace
 
 namespace arm
@@ -85,9 +125,9 @@ ArmNode::ArmNode()
   camera_index_ = declare_parameter<std::string>("camera_index", kDefaultCameraIndex);
   camera_device_ = declare_parameter<std::string>("camera_device", "");
   const std::string name_model_path = declare_parameter<std::string>(
-    "name_model_path", "/home/pc2/Desktop/arm/src/arm/best.onnx");
+    "name_model_path", kDefaultModelRelativePath);
   const std::string pnp_model_path = declare_parameter<std::string>(
-    "pnp_model_path", "/home/pc2/Desktop/arm/src/arm/best.onnx");
+    "pnp_model_path", kDefaultModelRelativePath);
   const bool name_cuda = declare_parameter<bool>("name_run_with_cuda", false);
   const bool pnp_cuda = declare_parameter<bool>("pnp_run_with_cuda", false);
   declare_parameter<bool>(kStartRecognitionParameter, false);
@@ -95,18 +135,21 @@ ArmNode::ArmNode()
   declare_parameter<bool>(kCancelRecognitionParameter, false);
   declare_parameter<double>(kVisionVarianceParameter, 0.0);
 
+  const cv::String resolved_name_model_path = resolveModelPath(name_model_path);
+  const cv::String resolved_pnp_model_path = resolveModelPath(pnp_model_path);
+
   openCamera();
   if (!camera_.isOpened()) {
     throw std::runtime_error("无法打开 USB 摄像头，索引: " + cameraSourceLabel());
   }
 
-  auto name_inference = std::make_shared<Inference>(name_model_path, cv::Size(640, 640), "", name_cuda);
+  auto name_inference = std::make_shared<Inference>(resolved_name_model_path, cv::Size(640, 640), "", name_cuda);
   // pnp 与 name 默认指向同一个 ONNX 模型，且两个检测器都在同一后台线程串行调用推理，
   // 因此模型路径与后端标志完全一致时复用同一实例，省去重复的磁盘加载、解析与内存占用。
   std::shared_ptr<Inference> pnp_inference =
-    (pnp_model_path == name_model_path && pnp_cuda == name_cuda)
+    (resolved_pnp_model_path == resolved_name_model_path && pnp_cuda == name_cuda)
     ? name_inference
-    : std::make_shared<Inference>(pnp_model_path, cv::Size(640, 640), "", pnp_cuda);
+    : std::make_shared<Inference>(resolved_pnp_model_path, cv::Size(640, 640), "", pnp_cuda);
 
   box_grid_detector_ = std::make_unique<BoxGridDetector>(name_inference);
   pnp_detector_ = std::make_unique<PnpDetector>(pnp_inference);

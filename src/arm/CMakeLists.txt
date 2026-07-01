@@ -14,6 +14,7 @@ endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(ament_cmake REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(rcl_interfaces REQUIRED)
@@ -47,12 +48,16 @@ target_include_directories(arm_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
+target_compile_definitions(arm_node PRIVATE ARM_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(arm_node arm_vision arm_inference ${OpenCV_LIBS})
 target_compile_features(arm_node PUBLIC cxx_std_17)
-ament_target_dependencies(arm_node geometry_msgs rcl_interfaces rclcpp std_msgs)
+ament_target_dependencies(arm_node ament_index_cpp geometry_msgs rcl_interfaces rclcpp std_msgs)
 
 install(TARGETS arm_node arm_inference arm_vision
   DESTINATION lib/${PROJECT_NAME})
+
+install(FILES best.onnx
+  DESTINATION share/${PROJECT_NAME}/models)
 
 install(DIRECTORY include/
   DESTINATION include)
