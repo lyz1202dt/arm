@@ -14,6 +14,18 @@ constexpr bool kEnableGammaCorrection = true;
 constexpr double kGamma = 0.7;
 constexpr int kMaskExpandPixels = 3;
 
+const Detection * findLargestDetection(const std::vector<Detection> & detections)
+{
+  if (detections.empty()) {
+    return nullptr;
+  }
+
+  return &*std::max_element(
+    detections.begin(), detections.end(), [](const Detection & lhs, const Detection & rhs) {
+      return lhs.box.area() < rhs.box.area();
+    });
+}
+
 // 伽马校正查找表只依赖编译期常量 kGamma，首次调用时构建一次后复用，避免每帧重建。
 const cv::Mat & gammaLut()
 {
@@ -80,17 +92,22 @@ std::optional<PnpResult> PnpDetector::detectOnce(const cv::Mat & frame)
   }
 
   cv::Mat mask = cv::Mat::zeros(cv::Size(undistorted_frame.cols, undistorted_frame.rows), CV_8UC1);
-  for (const auto & detection : detections) {
-    cv::Rect box = detection.box;
-    // 参考项目会对检测框做固定像素外扩，避免目标边缘恰好落在框外导致轮廓被截断。
-    box.x -= kMaskExpandPixels;
-    box.y -= kMaskExpandPixels;
-    box.width += 2 * kMaskExpandPixels;
-    box.height += 2 * kMaskExpandPixels;
-    box &= cv::Rect(0, 0, undistorted_frame.cols, undistorted_frame.rows);
-    if (box.width > 0 && box.height > 0) {
-      cv::rectangle(mask, box, cv::Scalar(255), -1);
-    }
+  const Detection * largest_detection = findLargestDetection(detections);
+  if (!largest_detection) {
+    cv::imshow("...", preview);
+    cv::waitKey(1);
+    return std::nullopt;
+  }
+
+  cv::Rect box = largest_detection->box;
+  // 参考项目会对检测框做固定像素外扩，避免目标边缘恰好落在框外导致轮廓被截断。
+  box.x -= kMaskExpandPixels;
+  box.y -= kMaskExpandPixels;
+  box.width += 2 * kMaskExpandPixels;
+  box.height += 2 * kMaskExpandPixels;
+  box &= cv::Rect(0, 0, undistorted_frame.cols, undistorted_frame.rows);
+  if (box.width > 0 && box.height > 0) {
+    cv::rectangle(mask, box, cv::Scalar(255), -1);
   }
 
   std::vector<cv::Point2f> best_rect_points;
@@ -142,12 +159,12 @@ std::optional<int> PnpDetector::detectBoxIndex(const cv::Mat & frame)
   cv::Mat undistorted_frame;
   cv::undistort(gamma_frame, undistorted_frame, camera_matrix_, dist_coeffs_);
   const auto detections = inference_->run(undistorted_frame);
-  if (detections.empty()) {
+  const Detection * largest_detection = findLargestDetection(detections);
+  if (!largest_detection) {
     return std::nullopt;
   }
 
-  // detections 已按置信度降序排列，取首个即为置信度最高的箱子。
-  return detections.front().class_id;
+  return largest_detection->class_id;
 }
 
 void PnpDetector::initPnpParameters()

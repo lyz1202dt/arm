@@ -30,7 +30,7 @@ public:
   // 对单帧图像执行一次 PnP 识别，成功时返回三维平移结果。
   std::optional<PnpResult> detectOnce(const cv::Mat & frame);
 
-  // 对单帧图像执行一次 YOLO 推理，返回置信度最高的箱子类别索引。
+  // 对单帧图像执行一次 YOLO 推理，返回面积最大的箱子类别索引。
   std::optional<int> detectBoxIndex(const cv::Mat & frame);
 
 private:
